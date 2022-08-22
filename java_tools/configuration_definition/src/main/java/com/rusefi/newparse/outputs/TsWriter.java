@@ -8,17 +8,15 @@ import java.io.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * proposed alternative which does not seem to be covered by any unit tests
- */
 public class TsWriter {
     // matches strings in the form of @@MY_var_123@@
     private static final Pattern VAR = Pattern.compile("@@([a-zA-Z0-9_]+?)@@");
 
     private static final Pattern OPTIONAL_LINE = Pattern.compile("@@if_([a-zA-Z0-9_]+)");
 
+    // TODO: We have to move either forward or backwards with newparse #4441
     public void writeTunerstudio(ParseState parser, String inputFile, String outputFile) throws IOException {
-        PrintStream ps = new PrintStream(new FileOutputStream(outputFile));
+        PrintStream ps = new PrintStreamAlwaysUnix(new FileOutputStream(outputFile));
         writeTunerstudio(parser, inputFile, ps);
         ps.close();
     }

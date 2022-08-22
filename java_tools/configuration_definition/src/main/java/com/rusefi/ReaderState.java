@@ -139,7 +139,8 @@ public class ReaderState {
             EnumIniField.ParseBitRange bitRange = new EnumIniField.ParseBitRange().invoke(rawLine.getTokens()[3]);
             int totalCount = 1 << (bitRange.getBitSize0() + 1);
             List<String> enums = Arrays.asList(rawLine.getTokens()).subList(4, rawLine.getTokens().length);
-            if (enums.size() > totalCount)
+            // at the moment we read 0=NONE as two tokens, thus enums.size() is divided by two
+            if (enums.size() / 2 > totalCount)
                 throw new IllegalStateException(name + ": Too many options in " + tunerStudioLine + " capacity=" + totalCount + "/size=" + enums.size());
 /*
     this does not work right now since smt32 and kinetis enum sizes could be different but same .txt file
@@ -147,10 +148,6 @@ public class ReaderState {
             if (enums.size() <= totalCount / 2)
                 throw new IllegalStateException("Too many bits allocated for " + enums + " capacity=" + totalCount + "/size=" + enums.size());
 */
-            // todo: TS enum key-value form #4232?
-            // this is needed to avoid 'bit Constant engineType, contains fewer options (103) that expected(128)' TS warning
-            for (int i = enums.size(); i < totalCount; i++)
-                tunerStudioLine += ", " + PinoutLogic.QUOTED_INVALID;
         }
 
         tsCustomLine.put(name, tunerStudioLine);

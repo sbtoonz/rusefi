@@ -38,16 +38,5 @@
 // H7 runs faster "slow" ADC to make up for reduced oversampling
 #define SLOW_ADC_RATE 1000
 
-#undef EFI_ICU_INPUTS
-#define EFI_ICU_INPUTS FALSE
-
-#undef HAL_TRIGGER_USE_PAL
-#define HAL_TRIGGER_USE_PAL TRUE
-
-#undef EFI_LOGIC_ANALYZER
-#define EFI_LOGIC_ANALYZER FALSE
-
 #undef LUA_USER_HEAP
 #define LUA_USER_HEAP 100000
-#undef LUA_SYSTEM_HEAP
-#define LUA_SYSTEM_HEAP 100000

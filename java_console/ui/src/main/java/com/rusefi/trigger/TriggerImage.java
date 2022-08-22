@@ -162,11 +162,11 @@ public class TriggerImage {
         UiUtils.trueLayout(content);
 
         triggerPanel.tdcPosition = triggerWheelInfo.getTdcPosition();
+        triggerPanel.gaps = triggerWheelInfo.getGaps();
 
         EngineReport re0 = new EngineReport(waves.get(0).list, MIN_TIME, 720 * (1 + EXTRA_COUNT));
         System.out.println(re0);
         EngineReport re1 = new EngineReport(waves.get(1).list, MIN_TIME, 720 * (1 + EXTRA_COUNT));
-        EngineReport re2 = new EngineReport(waves.get(2).list, MIN_TIME, 720 * (1 + EXTRA_COUNT));
 
         triggerPanel.removeAll();
         UpDownImage upDownImage0 = new UpDownImage(re0, "trigger");
@@ -176,17 +176,11 @@ public class TriggerImage {
         UpDownImage upDownImage1 = new UpDownImage(re1, "trigger");
         upDownImage1.setRenderText(false);
 
-        UpDownImage upDownImage2 = new UpDownImage(re2, "trigger");
-        upDownImage2.setRenderText(false);
-
         boolean isSingleSensor = re1.getList().isEmpty();
-        boolean isThirdVisible = !re2.getList().isEmpty();
 
         int height;
         if (isSingleSensor) {
             height = 1;
-        } else if (isThirdVisible) {
-            height = 3;
         } else {
             height = 2;
         }
@@ -198,9 +192,6 @@ public class TriggerImage {
 
         if (!isSingleSensor)
             triggerPanel.add(upDownImage1);
-
-        if (isThirdVisible)
-            triggerPanel.add(upDownImage2);
 
         triggerPanel.name = getTriggerName(triggerWheelInfo);
 //        triggerPanel.id = "#" + triggerWheelInfo.id;
@@ -337,6 +328,7 @@ public class TriggerImage {
         // angle
         public double tdcPosition;
         public UpDownImage image;
+        public TriggerWheelInfo.TriggerGaps gaps;
 
         @Override
         public void paint(Graphics g) {
@@ -372,6 +364,12 @@ public class TriggerImage {
                 tdcMessage = "TDC at synchronization point";
             }
             g.drawString("     " + tdcMessage, 0, tdcFontSize);
+            g.setColor(Color.darkGray);
+            for (int i = 0; i < gaps.gapFrom.length; i++) {
+                String message = "Sync " + (i + 1) + ": From " + gaps.gapFrom[i] + " to " + gaps.gapTo[i];
+                g.drawString("            " + message, 0, tdcFontSize * (2 + i));
+            }
+
 
             if (image == null)
                 return;
@@ -379,7 +377,7 @@ public class TriggerImage {
             g.drawLine(tdcX, 0, tdcX, h);
             Graphics2D g2 = (Graphics2D) g;
             g2.rotate(Math.PI / 2);
-            g2.drawString("TDC", 60, -tdcX - 3);
+            g2.drawString("TDC", 160, -tdcX - 3);
             g2.rotate(-Math.PI / 2);
         }
 

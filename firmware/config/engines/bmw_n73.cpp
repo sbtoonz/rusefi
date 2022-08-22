@@ -5,6 +5,8 @@
  * @author Andrey Belomutskiy, (c) 2012-2021
  */
 
+#include "pch.h"
+
 #include "bmw_n73.h"
 
 void setEngineProteusBMW_N73_GDI() {
@@ -29,7 +31,7 @@ function getBitRange(data, bitIndex, bitWidth)
 	byteIndex = bitIndex >> 3
 	shift = bitIndex - byteIndex * 8
 	value = data[1 + byteIndex]
-	if (shift + bitIndex > 8) then
+	if (shift + bitWidth > 8) then
 		value = value + data[2 + byteIndex] * 256
 	end
 	mask = (1 << bitWidth) - 1
@@ -68,6 +70,7 @@ E90_GEAR_SELECTOR = 0x192
 E90_DSC_STATUS = 0x19E
 E90_DSC_SPEED = 0x1A0
 E90_COOLANT = 0x1D0
+E90_GEAR_SELECTOR = 0x198
 E90_LOCKING = 0x2FC
 E90_MSA = 0x308
 E90_DASH_ON = 0x332
@@ -84,7 +87,7 @@ TCU_SERVICE = 0x598
 TCU_INPA_RESPONSE = 0x6f1
 
 ECU_BUS = 1
-GEAR_BUS = 2
+TCU_BUS = 2
 
 canRxAdd(E90_TORQUE_1)
 canRxAdd(E90_TORQUE_2)
@@ -113,7 +116,7 @@ canRxAdd(TCU_INPA_RESPONSE)
 
 
 function relayToTcu(id, data)
-	txCan(GEAR_BUS, id, 0, data) -- relay non-TCU message to TCU
+	txCan(TCU_BUS, id, 0, data) -- relay non-TCU message to TCU
 end
 
 function relayToEcu(id, data)
@@ -126,7 +129,7 @@ end
 
 hexstr = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, "A", "B", "C", "D", "E", "F" }
 
-function decimalToHex(num)
+function toHexString(num)
 	if num == 0 then
 		return '0'
 	end
@@ -140,11 +143,11 @@ function decimalToHex(num)
 	return result
 end
 
-function print_array(arr)
+function arrayToString(arr)
 	local str = ""
 	local index = 1
 	while arr[index] ~= nil do
-		str = str.." "..decimalToHex(arr[index])
+		str = str.." "..toHexString(arr[index])
 		index = index + 1
 	end
 	return str
@@ -171,8 +174,8 @@ function onCanRx(bus, id, dlc, data)
         output[2] = counterE90_RPM_THROTTLE
         output[1] = bmwChecksum(E90_RPM_THROTTLE, output, 2, 7)
 
---		print('original ' ..print_array(data))
---		print('repacked ' ..print_array(output))
+--		print('original ' ..arrayToString(data))
+--		print('repacked ' ..arrayToString(output))
 
 		relayToTcu(id, output)
 	elseif id == E90_DSC_TORQUE_DEMAND then
@@ -263,6 +266,7 @@ function onCanRx(bus, id, dlc, data)
 end
 
 function onTick()
+ -- empty 'onTick' until we make 'onTick' method optional
 end
 
 )", efi::size(config->luaScript));

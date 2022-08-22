@@ -88,20 +88,18 @@ static void setupDefaultSensorInputs() {
 void setBoardConfigOverrides() {
 	setHellen144LedPins();
 	setupVbatt();
-	setSdCardConfigurationOverrides();
 
-	engineConfiguration->clt.config.bias_resistor = 4700;
-	engineConfiguration->iat.config.bias_resistor = 4700;
+    // hellen88bmw uses L6205PD
+	engineConfiguration->etbIo[0].directionPin1 = H144_OUT_PWM2; // ETB+
+	engineConfiguration->etbIo[0].directionPin2 = H144_OUT_PWM3; // ETB-
+	engineConfiguration->etbIo[0].controlPin = H144_OUT_PWM1; // ETB_EN
+	engineConfiguration->etb_use_two_wires = true;
+
+	setHellenSdCardSpi3();
+
+	engineConfiguration->clt.config.bias_resistor = 2700;
+	engineConfiguration->iat.config.bias_resistor = 2700;
 }
-
-void setSerialConfigurationOverrides() {
-	engineConfiguration->useSerialPort = false;
-
-
-
-
-}
-
 
 /**
  * @brief   Board-specific configuration defaults.
@@ -132,10 +130,6 @@ void setBoardDefaultConfiguration() {
 	// "required" hardware is done - set some reasonable defaults
 	setupDefaultSensorInputs();
 
-	engineConfiguration->etbIo[0].directionPin1 = Gpio::D15; // out_pwm7
-	engineConfiguration->etbIo[0].directionPin2 = Gpio::D14; // out_pwm6
-	engineConfiguration->etbIo[0].controlPin = Gpio::D13; // ETB_EN out_pwm1
-	engineConfiguration->etb_use_two_wires = true;
 
 	// Some sensible defaults for other options
 	setCrankOperationMode();
@@ -168,23 +162,4 @@ void setBoardDefaultConfiguration() {
 	engineConfiguration->tps1SecondaryMin = 891;
 	engineConfiguration->tps1SecondaryMax = 102;
 	hellenWbo();
-}
-
-/**
- * @brief   Board-specific SD card configuration code overrides. Needed by bootloader code.
- * @todo    Add your board-specific code, if any.
- */
-void setSdCardConfigurationOverrides() {
-	engineConfiguration->sdCardSpiDevice = SPI_DEVICE_3;
-
-	engineConfiguration->spi3mosiPin = Gpio::C12;
-	engineConfiguration->spi3misoPin = Gpio::C11;
-	engineConfiguration->spi3sckPin = Gpio::C10;
-	engineConfiguration->sdCardCsPin = Gpio::A15;
-
-//	engineConfiguration->spi2mosiPin = Gpio::B15;
-//	engineConfiguration->spi2misoPin = Gpio::B14;
-//	engineConfiguration->spi2sckPin = Gpio::B13;
-//	engineConfiguration->sdCardCsPin = Gpio::B12;
-	engineConfiguration->is_enabled_spi_3 = true;
 }

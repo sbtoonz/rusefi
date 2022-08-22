@@ -46,8 +46,9 @@ ifeq ($(USE_OPT),)
 #	USE_OPT += -O0 -g
 
 	ifeq ($(OS),Windows_NT)
+		USE_OPT += -DEFI_SIM_IS_WINDOWS=1
 	else
-		USE_OPT += -m32
+		USE_OPT += -m32 -DEFI_SIM_IS_WINDOWS=0
 	endif
 endif
 
@@ -128,6 +129,11 @@ PROJECT_DIR = ../firmware
 
 # Imported source files and paths
 
+# Configure libfirmware Paths/Includes
+RUSEFI_LIB = $(PROJECT_DIR)/libfirmware
+include $(RUSEFI_LIB)/util/util.mk
+include $(RUSEFI_LIB)/pt2001/pt2001.mk
+
 # Licensing files.
 include $(CHIBIOS)/os/license/license.mk
 # Startup files.
@@ -157,6 +163,7 @@ include $(PROJECT_DIR)/common.mk
 # setting.
 CSRC =  $(ALLCSRC) \
 
+
 # C++ sources that can be compiled in ARM or THUMB mode depending on the global
 # setting.
 CPPSRC = $(ALLCPPSRC) \
@@ -167,9 +174,11 @@ CPPSRC = $(ALLCPPSRC) \
 	$(CONSOLE_SRC_CPP) \
 	$(DEV_SIMULATOR_SRC_CPP) \
 	simulator/rusEfiFunctionalTest.cpp \
+	simulator/can/hal_can_lld.cpp \
 	simulator/framework.cpp \
 	simulator/boards.cpp \
 	$(TEST_SRC_CPP) \
+	$(RUSEFI_LIB_CPP) \
 	main.cpp
 
 
@@ -183,6 +192,8 @@ INCDIR = . \
           $(PROJECT_DIR)/hw_layer/drivers/can \
           ${CHIBIOS}/os/various \
           $(CHIBIOS)/os/hal/lib/streams \
+		  $(RUSEFI_LIB_INC) \
+          simulator/can \
           simulator
 
 # List ASM source files here

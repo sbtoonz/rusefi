@@ -9,11 +9,7 @@
 
 #include "trigger_subaru.h"
 
-/**
- * This trigger is also used by Nissan and Mazda
- * https://rusefi.com/forum/viewtopic.php?f=2&t=1932
- */
-void initialize36_2_2_2(TriggerWaveform *s) {
+static void initialize_one_of_36_2_2_2(TriggerWaveform *s, int firstCount, int secondCount, bool hasRotaryRelevance) {
 	s->initialize(FOUR_STROKE_CRANK_SENSOR);
 
 #if EFI_UNIT_TEST
@@ -24,13 +20,9 @@ void initialize36_2_2_2(TriggerWaveform *s) {
 	float wide = 30 * 2;
 	float narrow = 10 * 2;
 
-	s->setTriggerSynchronizationGap(0.333f);
-	s->setSecondTriggerSynchronizationGap(1.0f);
-	s->setThirdTriggerSynchronizationGap(3.0f);
-
 	float base = 0;
 
-	for (int i = 0; i < 12; i++) {
+	for (int i = 0; i < firstCount; i++) {
 		s->addEvent720(base + narrow / 2, T_PRIMARY, TV_FALL);
 		s->addEvent720(base + narrow, T_PRIMARY, TV_RISE);
 		base += narrow;
@@ -40,7 +32,7 @@ void initialize36_2_2_2(TriggerWaveform *s) {
 	s->addEvent720(base + wide, T_PRIMARY, TV_RISE);
 	base += wide;
 
-	for (int i = 0; i < 15; i++) {
+	for (int i = 0; i < secondCount; i++) {
 		s->addEvent720(base + narrow / 2, T_PRIMARY, TV_FALL);
 		s->addEvent720(base + narrow, T_PRIMARY, TV_RISE);
 		base += narrow;
@@ -52,6 +44,26 @@ void initialize36_2_2_2(TriggerWaveform *s) {
 	s->addEvent720(720 - wide / 2, T_PRIMARY, TV_FALL);
 	s->addEvent720(720, T_PRIMARY, TV_RISE);
 	s->useOnlyPrimaryForSync = true;
+}
+
+/**
+ * This trigger is also used by Nissan and Mazda
+ * https://rusefi.com/forum/viewtopic.php?f=2&t=1932
+ */
+void initialize36_2_2_2(TriggerWaveform *s) {
+	initialize_one_of_36_2_2_2(s, 12, 15, true);
+
+	s->setTriggerSynchronizationGap(0.333f);
+	s->setSecondTriggerSynchronizationGap(1.0f);
+	s->setThirdTriggerSynchronizationGap(3.0f);
+}
+
+void initializeSubaruEZ30(TriggerWaveform *s) {
+	initialize_one_of_36_2_2_2(s, 18, 9, true);
+
+	s->setTriggerSynchronizationGap3(/*gapIndex*/0, 0.25, 0.5);
+	s->setTriggerSynchronizationGap3(/*gapIndex*/1, 0.7, 1.5);
+	s->setTriggerSynchronizationGap3(/*gapIndex*/2, 2, 4);
 }
 
 static void initializeSubaru7_6(TriggerWaveform *s, bool withCrankWheel) {

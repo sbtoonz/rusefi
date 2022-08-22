@@ -83,6 +83,7 @@ void TriggerDecoderBase::resetTriggerState() {
 
 void TriggerDecoderBase::setTriggerErrorState() {
 	m_timeSinceDecodeError.reset();
+	totalTriggerErrorCounter++;
 }
 
 void TriggerDecoderBase::resetCurrentCycleState() {
@@ -103,6 +104,7 @@ PrimaryTriggerDecoder::PrimaryTriggerDecoder(const char* name)
 #if ! EFI_PROD_CODE
 bool printTriggerDebug = false;
 bool printTriggerTrace = false;
+// todo: migrate to triggerSyncGapRatio or triggerActualSyncGapRatio?
 float actualSynchGap;
 #endif /* ! EFI_PROD_CODE */
 
@@ -254,6 +256,7 @@ float PrimaryTriggerDecoder::calculateInstantRpm(
 	// Determine where we currently are in the revolution
 	angle_t currentAngle = triggerFormDetails->eventAngles[current_index];
 	if (cisnan(currentAngle)) {
+		// todo: huh? dead code? how can we get NAN from eventAngles table?
 		return NOISY_RPM;
 	}
 
@@ -389,7 +392,7 @@ angle_t PrimaryTriggerDecoder::syncEnginePhase(int divider, int remainder, angle
 	m_hasSynchronizedPhase = true;
 
 	if (totalShift > 0) {
-		vvtSyncCounter++;
+		camResyncCounter++;
 	}
 
 	return totalShift;
@@ -518,11 +521,8 @@ expected<TriggerDecodeResult> TriggerDecoderBase::decodeTriggerEvent(
 		}
 #endif /* EFI_UNIT_TEST */
 
-		/**
-		 * For less important events we simply increment the index.
-		 */
-		nextTriggerEvent()
-		;
+		// For less important events we simply increment the index.
+		nextTriggerEvent();
 	} else {
 #if !EFI_PROD_CODE
 		if (printTriggerTrace) {
@@ -559,7 +559,9 @@ expected<TriggerDecodeResult> TriggerDecoderBase::decodeTriggerEvent(
 #endif /* EFI_UNIT_TEST */
 
 #if EFI_PROD_CODE || EFI_SIMULATOR
-			if (triggerConfiguration.VerboseTriggerSynchDetails || (someSortOfTriggerError() && !silentTriggerError)) {
+			bool verbose = engine->isEngineSnifferEnabled && triggerConfiguration.VerboseTriggerSynchDetails;
+
+			if (verbose || (someSortOfTriggerError() && !silentTriggerError)) {
 
 				int rpm = Sensor::getOrZero(SensorType::Rpm);
 				floatms_t engineCycleDuration = getEngineCycleDuration(rpm);
@@ -576,15 +578,20 @@ expected<TriggerDecodeResult> TriggerDecoderBase::decodeTriggerEvent(
 						efiPrintf("index=%d NaN gap, you have noise issues?",
 								i);
 					} else {
-						efiPrintf("%srpm=%d time=%d eventIndex=%d gapIndex=%d: gap=%.3f expected from %.3f to %.3f error=%s",
+						float ratioTo = triggerShape.syncronizationRatioTo[i];
+
+						bool gapOk = isInRange(ratioFrom, gap, ratioTo);
+
+						efiPrintf("%srpm=%d time=%d eventIndex=%d gapIndex=%d: %s gap=%.3f expected from %.3f to %.3f error=%s",
 								triggerConfiguration.PrintPrefix,
 								(int)Sensor::getOrZero(SensorType::Rpm),
 							/* cast is needed to make sure we do not put 64 bit value to stack*/ (int)getTimeNowSeconds(),
 							currentCycle.current_index,
 							i,
+							gapOk ? "Y" : "n",
 							gap,
 							ratioFrom,
-							triggerShape.syncronizationRatioTo[i],
+							ratioTo,
 							boolToString(someSortOfTriggerError()));
 					}
 				}
@@ -650,7 +657,6 @@ expected<TriggerDecodeResult> TriggerDecoderBase::decodeTriggerEvent(
 			// so we clear the synchronized flag.
 			if (wasSynchronized && isDecodingError) {
 				setTriggerErrorState();
-				totalTriggerErrorCounter++;
 
 				// Something wrong, no longer synchronized
 				setShaftSynchronized(false);
@@ -663,13 +669,11 @@ expected<TriggerDecodeResult> TriggerDecoderBase::decodeTriggerEvent(
 			}
 
 			// this call would update duty cycle values
-			nextTriggerEvent()
-			;
+			nextTriggerEvent();
 
 			onShaftSynchronization(wasSynchronized, nowNt, triggerShape);
 		} else {	/* if (!isSynchronizationPoint) */
-			nextTriggerEvent()
-			;
+			nextTriggerEvent();
 		}
 
 		for (int i = triggerShape.gapTrackingLength; i > 0; i--) {
@@ -687,8 +691,6 @@ expected<TriggerDecodeResult> TriggerDecoderBase::decodeTriggerEvent(
 		if (Sensor::getOrZero(SensorType::Rpm) != 0) {
 			warning(CUSTOM_SYNC_ERROR, "sync error for %s: index #%d above total size %d", name, currentCycle.current_index, triggerShape.getSize());
 			setTriggerErrorState();
-
-			// TODO: should we increment totalTriggerErrorCounter here too?
 		}
 
 		onTriggerError();

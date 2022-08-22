@@ -185,10 +185,10 @@ TEST(trigger, test1995FordInline6TriggerDecoder) {
 	IgnitionEventList *ecl = &engine->ignitionEvents;
 	ASSERT_EQ( 1,  ecl->isReady) << "ford inline ignition events size";
 	ASSERT_EQ( 0,  ecl->elements[0].dwellPosition.triggerEventIndex) << "event index";
-	ASSERT_NEAR(7.9579, ecl->elements[0].dwellPosition.angleOffsetFromTriggerEvent, EPS4D) << "angle offset#1";
+	ASSERT_NEAR(7.9579, ecl->elements[0].dwellPosition.angleOffsetFromTriggerEvent, EPS2D) << "angle offset#1";
 
 	ASSERT_EQ( 10,  ecl->elements[5].dwellPosition.triggerEventIndex) << "event index";
-	ASSERT_NEAR(7.9579, ecl->elements[5].dwellPosition.angleOffsetFromTriggerEvent, EPS4D) << "angle offset#2";
+	ASSERT_NEAR(7.9579, ecl->elements[5].dwellPosition.angleOffsetFromTriggerEvent, EPS2D) << "angle offset#2";
 
 
 	ASSERT_FLOAT_EQ(0.5, engine->ignitionState.getSparkDwell(2000)) << "running dwell";
@@ -224,9 +224,10 @@ TEST(misc, testFordAspire) {
 
 }
 
-static void testTriggerDecoder2(const char *msg, engine_type_e type, int synchPointIndex, float channel1duty, float channel2duty) {
+static void testTriggerDecoder2(const char *msg, engine_type_e type, int synchPointIndex, float channel1duty, float channel2duty, float expectedGapRatio = NAN) {
 	printf("====================================================================================== testTriggerDecoder2 msg=%s\r\n", msg);
 
+	actualSynchGap = 0; // global variables are bad, let's at least reset state
 	// Some configs use aux valves, which requires this sensor
 	std::unordered_map<SensorType, float> sensorVals = {{SensorType::DriverThrottleIntent, 0}};
 	EngineTestHelper eth(type, sensorVals);
@@ -236,11 +237,9 @@ static void testTriggerDecoder2(const char *msg, engine_type_e type, int synchPo
 	ASSERT_FALSE(t->shapeDefinitionError) << "isError";
 
 	assertEqualsM("synchPointIndex", synchPointIndex, t->getTriggerWaveformSynchPointIndex());
-}
-
-static void testTriggerDecoder3(const char *msg, engine_type_e type, int synchPointIndex, float channel1duty, float channel2duty, float expectedGap) {
-	testTriggerDecoder2(msg, type, synchPointIndex, channel1duty, channel2duty);
-	assertEqualsM2("actual gap ratio", expectedGap, actualSynchGap, 0.001);
+	if (!cisnan(expectedGapRatio)) {
+		assertEqualsM2("actual gap ratio", expectedGapRatio, actualSynchGap, 0.001);
+    }
 }
 
 static void assertREquals(void *expected, void *actual) {
@@ -310,7 +309,7 @@ TEST(misc, testRpmCalculator) {
 
 	assertEqualsM("fuel #1", 4.5450, engine->injectionDuration);
 	InjectionEvent *ie0 = &engine->injectionEvents.elements[0];
-	assertEqualsM("injection angle", 4.095, ie0->injectionStart.angleOffsetFromTriggerEvent);
+	assertEqualsM("injection angle", 499.095, ie0->injectionStartAngle);
 
 	eth.firePrimaryTriggerRise();
 	ASSERT_EQ(1500, Sensor::getOrZero(SensorType::Rpm));
@@ -468,11 +467,11 @@ TEST(trigger, testTriggerDecoder) {
 
 	}
 	testTriggerDecoder2("miata 1990", MRE_MIATA_NA6_VAF, 4, 1 - 0.7015, 1 - 0.3890);
-	testTriggerDecoder3("citroen", CITROEN_TU3JP, 0, 0.4833, 0.0, 2.9994);
+	testTriggerDecoder2("citroen", CITROEN_TU3JP, 0, 0.4833, 0.0, 2.9994);
 
 	testTriggerDecoder2("CAMARO_4", CAMARO_4, 40, 0.5, 0);
 
-	testTriggerDecoder3("neon NGC4", DODGE_NEON_2003_CRANK, 6, 0.5000, 0.0, CHRYSLER_NGC4_GAP);
+	testTriggerDecoder2("neon NGC4", DODGE_NEON_2003_CRANK, 6, 0.5000, 0.0, CHRYSLER_NGC4_GAP);
 
 	{
 		EngineTestHelper eth(DODGE_NEON_2003_CRANK);
@@ -490,9 +489,8 @@ TEST(trigger, testTriggerDecoder) {
 }
 
 static void assertInjectionEventBase(const char *msg, InjectionEvent *ev, int injectorIndex, int eventIndex, angle_t angleOffset) {
-	ASSERT_EQ(injectorIndex, ev->outputs[0]->injectorIndex) << msg << "inj index";
-	assertEqualsM4(msg, " event index", eventIndex, ev->injectionStart.triggerEventIndex);
-	assertEqualsM4(msg, " event offset", angleOffset, ev->injectionStart.angleOffsetFromTriggerEvent);
+	EXPECT_EQ(injectorIndex, ev->outputs[0]->injectorIndex) << msg << "inj index";
+	EXPECT_NEAR_M4(angleOffset, ev->injectionStartAngle) << msg << "inj index";
 }
 
 static void assertInjectionEvent(const char *msg, InjectionEvent *ev, int injectorIndex, int eventIndex, angle_t angleOffset) {
@@ -547,8 +545,8 @@ static void setTestBug299(EngineTestHelper *eth) {
 
 	FuelSchedule * t = &engine->injectionEvents;
 
-	assertInjectionEvent("#0", &t->elements[0], 0, 1, 153);
-	assertInjectionEvent("#1_i_@", &t->elements[1], 1, 1, 333);
+	assertInjectionEvent("#0", &t->elements[0], 0, 1, 153 + 360);
+	assertInjectionEvent("#1_i_@", &t->elements[1], 1, 1, 333 + 360);
 	assertInjectionEvent("#2@", &t->elements[2], 0, 0, 153);
 	assertInjectionEvent("inj#3@", &t->elements[3], 1, 0, 153 + 180);
 
@@ -623,8 +621,8 @@ static void setTestBug299(EngineTestHelper *eth) {
 }
 
 static void assertInjectors(const char *msg, int value0, int value1) {
-	assertEqualsM4(msg, "inj#0", value0, enginePins.injectors[0].currentLogicValue);
-	assertEqualsM4(msg, "inj#1", value1, enginePins.injectors[1].currentLogicValue);
+	EXPECT_EQ(value0, enginePins.injectors[0].currentLogicValue);
+	EXPECT_EQ(value1, enginePins.injectors[1].currentLogicValue);
 }
 
 static void setArray(float* p, size_t count, float value) {
@@ -716,7 +714,7 @@ void doTestFuelSchedulerBug299smallAndMedium(int startUpDelayMs) {
 	t = &engine->injectionEvents;
 
 	assertInjectionEvent("#0", &t->elements[0], 0, 0, 315);
-	assertInjectionEvent("#1__", &t->elements[1], 1, 1, 135);
+	assertInjectionEvent("#1__", &t->elements[1], 1, 1, 495);
 	assertInjectionEvent("inj#2", &t->elements[2], 0, 0, 153);
 	assertInjectionEvent("inj#3", &t->elements[3], 1, 0, 333);
 
@@ -803,10 +801,10 @@ void doTestFuelSchedulerBug299smallAndMedium(int startUpDelayMs) {
 
 	t = &engine->injectionEvents;
 
-	assertInjectionEvent("#0#", &t->elements[0], 0, 0, 315);
-	assertInjectionEvent("#1#", &t->elements[1], 1, 1, 135);
-	assertInjectionEvent("#2#", &t->elements[2], 0, 1, 315);
-	assertInjectionEvent("#3#", &t->elements[3], 1, 0, 45 + 90);
+	assertInjectionEvent("#0#", &t->elements[0], 0, 0, 135 + 180);
+	assertInjectionEvent("#1#", &t->elements[1], 1, 1, 135 + 360);
+	assertInjectionEvent("#2#", &t->elements[2], 0, 1, 135 + 540);
+	assertInjectionEvent("#3#", &t->elements[3], 1, 0, 135);
 
 	engine->injectionDuration = 17.5;
 	// Injection duration of 17.5ms
@@ -849,8 +847,8 @@ void doTestFuelSchedulerBug299smallAndMedium(int startUpDelayMs) {
 	t = &engine->injectionEvents;
 
 	assertInjectionEvent("#00", &t->elements[0], 0, 0, 225); // 87.5 duty cycle
-	assertInjectionEvent("#10", &t->elements[1], 1, 1, 45);
-	assertInjectionEvent("#20", &t->elements[2], 0, 1, 225);
+	assertInjectionEvent("#10", &t->elements[1], 1, 1, 45  + 360);
+	assertInjectionEvent("#20", &t->elements[2], 0, 1, 225 + 360);
 	assertInjectionEvent("#30", &t->elements[3], 1, 0, 45);
 
 	 // todo: what's what? a mix of new something and old something?
@@ -868,7 +866,7 @@ void doTestFuelSchedulerBug299smallAndMedium(int startUpDelayMs) {
 
 	ASSERT_EQ( 0,  unitTestWarningCodeState.recentWarnings.getCount()) << "warningCounter#testFuelSchedulerBug299smallAndMedium";
 /*
-	ASSERT_EQ(CUSTOM_OBD_SKIPPED_FUEL, unitTestWarningCodeState.recentWarnings.get(0));
+	ASSERT_EQ(CUSTOM_OBD_SKIPPED_FUEL, unitTestWarningCodeState.recentWarnings.get(0).Code);
 */
 }
 
@@ -903,8 +901,8 @@ TEST(big, testTwoWireBatch) {
 
 	FuelSchedule * t = &engine->injectionEvents;
 
-	assertInjectionEventBatch("#0", &t->elements[0],		0, 3, 1, 153);	// Cyl 1 and 4
-	assertInjectionEventBatch("#1_i_@", &t->elements[1],	2, 1, 1, 153 + 180);	// Cyl 3 and 2
+	assertInjectionEventBatch("#0", &t->elements[0],		0, 3, 1, 153 + 360);	// Cyl 1 and 4
+	assertInjectionEventBatch("#1_i_@", &t->elements[1],	2, 1, 1, 153 + 540);	// Cyl 3 and 2
 	assertInjectionEventBatch("#2@", &t->elements[2],		3, 0, 0, 153);	// Cyl 4 and 1
 	assertInjectionEventBatch("inj#3@", &t->elements[3],	1, 2, 0, 153 + 180);	// Cyl 2 and 3
 }
@@ -931,8 +929,8 @@ TEST(big, testSequential) {
 
 	FuelSchedule * t = &engine->injectionEvents;
 
-	assertInjectionEvent("#0", &t->elements[0],		0, 1, 126);	// Cyl 1
-	assertInjectionEvent("#1_i_@", &t->elements[1],	2, 1, 126 + 180);	// Cyl 3
+	assertInjectionEvent("#0", &t->elements[0],		0, 1, 126 + 360);	// Cyl 1
+	assertInjectionEvent("#1_i_@", &t->elements[1],	2, 1, 126 + 540);	// Cyl 3
 	assertInjectionEvent("#2@", &t->elements[2],	3, 0, 126);	// Cyl 4
 	assertInjectionEvent("inj#3@", &t->elements[3],	1, 0, 126 + 180);	// Cyl 2
 }
@@ -1049,7 +1047,7 @@ TEST(big, testFuelSchedulerBug299smallAndLarge) {
 	eth.executeActions();
 	ASSERT_EQ( 0,  unitTestWarningCodeState.recentWarnings.getCount()) << "warningCounter#testFuelSchedulerBug299smallAndLarge";
 	/*
-	ASSERT_EQ(CUSTOM_OBD_SKIPPED_FUEL, unitTestWarningCodeState.recentWarnings.get(0));
+	ASSERT_EQ(CUSTOM_OBD_SKIPPED_FUEL, unitTestWarningCodeState.recentWarnings.get(0).Code);
 */
 }
 
@@ -1155,8 +1153,8 @@ TEST(big, testSparkReverseOrderBug319) {
 	eth.executeActions();
 	ASSERT_EQ( 0,  enginePins.coils[3].outOfOrder) << "out-of-order #8";
 	ASSERT_EQ( 2,  unitTestWarningCodeState.recentWarnings.getCount()) << "warningCounter#SparkReverseOrderBug319";
-	ASSERT_EQ(CUSTOM_DWELL_TOO_LONG, unitTestWarningCodeState.recentWarnings.get(0)) << "warning @0";
-	ASSERT_EQ(CUSTOM_OUT_OF_ORDER_COIL, unitTestWarningCodeState.recentWarnings.get(1));
+	ASSERT_EQ(CUSTOM_DWELL_TOO_LONG, unitTestWarningCodeState.recentWarnings.get(0).Code) << "warning @0";
+	ASSERT_EQ(CUSTOM_OUT_OF_ORDER_COIL, unitTestWarningCodeState.recentWarnings.get(1).Code);
 }
 
 TEST(big, testMissedSpark299) {

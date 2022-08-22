@@ -17,6 +17,7 @@
 #include "closed_loop_fuel.h"
 #include "launch_control.h"
 #include "injector_model.h"
+#include "tunerstudio.h"
 
 #if EFI_PROD_CODE
 #include "svnversion.h"
@@ -33,27 +34,51 @@ WarningCodeState::WarningCodeState() {
 void WarningCodeState::clear() {
 	warningCounter = 0;
 	lastErrorCode = 0;
-	timeOfPreviousWarning = DEEP_IN_THE_PAST_SECONDS;
 	recentWarnings.clear();
 }
 
 void WarningCodeState::addWarningCode(obd_code_e code) {
 	warningCounter++;
 	lastErrorCode = code;
-	if (!recentWarnings.contains(code)) {
+
+	warning_t* existing = recentWarnings.find(code);
+
+	if (!existing) {
 		chibios_rt::CriticalSectionLocker csl;
 
-		// We don't bother double checking
-		recentWarnings.add((int)code);
+		// Add the code to the list
+		existing = recentWarnings.add(warning_t(code));
 	}
+
+	if (existing) {
+		// Reset the timer on the code to now
+		existing->LastTriggered.reset();
+	}
+
+	// Reset the "any warning" timer too
+	timeSinceLastWarning.reset();
 }
 
 /**
  * @param forIndicator if we want to retrieving value for TS indicator, this case a minimal period is applued
  */
-bool WarningCodeState::isWarningNow(efitimesec_t now, bool forIndicator) const {
-	int period = forIndicator ? maxI(3, engineConfiguration->warningPeriod) : engineConfiguration->warningPeriod;
-	return absI(now - timeOfPreviousWarning) < period;
+bool WarningCodeState::isWarningNow() const {
+	int period = maxI(3, engineConfiguration->warningPeriod);
+
+	return !timeSinceLastWarning.hasElapsedSec(period);
+}
+
+// Check whether a particular warning is active
+bool WarningCodeState::isWarningNow(obd_code_e code) const {
+	warning_t* warn = recentWarnings.find(code);
+
+	// No warning found at all
+	if (!warn) {
+		return false;
+	}
+
+	// If the warning is old, it is not active
+	return !warn->LastTriggered.hasElapsedSec(maxI(3, engineConfiguration->warningPeriod));
 }
 
 void FuelConsumptionState::consumeFuel(float grams, efitick_t nowNt) {
@@ -92,12 +117,13 @@ void EngineState::periodicFastCallback() {
 		warning(CUSTOM_SLOW_NOT_INVOKED, "Slow not invoked yet");
 	}
 	efitick_t nowNt = getTimeNowNt();
+	
 	if (engine->rpmCalculator.isCranking()) {
-		crankingTime = nowNt;
-		timeSinceCranking = 0.0f;
-	} else {
-		timeSinceCranking = nowNt - crankingTime;
+		crankingTimer.reset(nowNt);
 	}
+
+	running.timeSinceCrankingInSecs = crankingTimer.getElapsedSeconds(nowNt);
+
 	recalculateAuxValveTiming();
 
 	int rpm = Sensor::getOrZero(SensorType::Rpm);
@@ -114,8 +140,6 @@ void EngineState::periodicFastCallback() {
 	// post-cranking fuel enrichment.
 	// for compatibility reasons, apply only if the factor is greater than unity (only allow adding fuel)
 	if (engineConfiguration->postCrankingFactor > 1.0f) {
-		// convert to microsecs and then to seconds
-		running.timeSinceCrankingInSecs = NT2US(timeSinceCranking) / US_PER_SECOND_F;
 		// use interpolation for correction taper
 		running.postCrankingFuelCorrection = interpolateClamped(0.0f, engineConfiguration->postCrankingFactor,
 			engineConfiguration->postCrankingDurationSec, 1.0f, running.timeSinceCrankingInSecs);
@@ -222,4 +246,26 @@ trigger_config_s VvtTriggerConfiguration::getType() const {
 
 bool VvtTriggerConfiguration::isVerboseTriggerSynchDetails() const {
 	return engineConfiguration->verboseVVTDecoding;
+}
+
+bool isLockedFromUser() {
+	int lock = engineConfiguration->tuneHidingKey;
+	bool isLocked = lock > 0;
+	if (isLocked) {
+		firmwareError(OBD_PCM_Processor_Fault, "password protected");
+	}
+	return isLocked;
+}
+
+void unlockEcu(int password) {
+	if (password != engineConfiguration->tuneHidingKey) {
+		efiPrintf("Nope rebooting...");
+#if EFI_PROD_CODE
+		scheduleReboot();
+#endif // EFI_PROD_CODE
+	} else {
+		efiPrintf("Unlocked! Burning...");
+		engineConfiguration->tuneHidingKey = 0;
+		requestBurn();
+	}
 }

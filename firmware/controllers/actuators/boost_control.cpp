@@ -28,6 +28,12 @@ void BoostController::init(IPwm* pwm, const ValueProvider3D* openLoopMap, const 
 	m_closedLoopTargetMap = closedLoopTargetMap;
 
 	m_pid.initPidClass(pidParams);
+	resetLua();
+}
+
+void BoostController::resetLua() {
+	luaTargetAdd = 0;
+	luaTargetMult = 1;
 }
 
 void BoostController::onConfigurationChange(pid_s* previousConfiguration) {
@@ -45,8 +51,8 @@ expected<float> BoostController::getSetpoint() {
 	// Open loop needs to work even in case of invalid closed loop config
 	isNotClosedLoop = engineConfiguration->boostType != CLOSED_LOOP;
 	if (isNotClosedLoop) {
-		closedLoopPart = 0;
-		return closedLoopPart;
+		boostControllerClosedLoopPart = 0;
+		return (float)boostControllerClosedLoopPart;
 	}
 
 	float rpm = Sensor::getOrZero(SensorType::Rpm);
@@ -60,7 +66,7 @@ expected<float> BoostController::getSetpoint() {
 
 	efiAssert(OBD_PCM_Processor_Fault, m_closedLoopTargetMap != nullptr, "boost closed loop target", unexpected);
 
-	return m_closedLoopTargetMap->getValue(rpm, tps.Value);
+    return m_closedLoopTargetMap->getValue(rpm, tps.Value) * luaTargetMult + luaTargetAdd;
 }
 
 expected<percent_t> BoostController::getOpenLoop(float target) {
@@ -118,16 +124,13 @@ percent_t BoostController::getClosedLoopImpl(float target, float manifoldPressur
 }
 
 expected<percent_t> BoostController::getClosedLoop(float target, float manifoldPressure) {
-	closedLoopPart = getClosedLoopImpl(target, manifoldPressure);
+	boostControllerClosedLoopPart = getClosedLoopImpl(target, manifoldPressure);
 
-	engine->outputChannels.boostControllerClosedLoopPart = closedLoopPart;
 	m_pid.postState(engine->outputChannels.boostStatus);
 
-#if EFI_TUNER_STUDIO
-	engine->outputChannels.boostControlTarget = target;
-#endif /* EFI_TUNER_STUDIO */
+	boostControlTarget = target;
 
-	return closedLoopPart;
+	return (float)boostControllerClosedLoopPart;
 }
 
 void BoostController::setOutput(expected<float> output) {
@@ -155,7 +158,16 @@ void BoostController::update() {
 	m_pid.iTermMin = -50;
 	m_pid.iTermMax = 50;
 
-	ClosedLoopController::update();
+	bool rpmTooLow = Sensor::getOrZero(SensorType::Rpm) < engineConfiguration->boostControlMinRpm;
+	bool tpsTooLow = Sensor::getOrZero(SensorType::Tps1) < engineConfiguration->boostControlMinTps;
+	bool mapTooLow = Sensor::getOrZero(SensorType::Map) < engineConfiguration->boostControlMinMap;
+
+	if (rpmTooLow || tpsTooLow || mapTooLow) {
+		// Passing unexpected will use the safe duty cycle configured by the user
+		setOutput(unexpected);
+	} else {
+		ClosedLoopController::update();
+	}
 }
 
 static bool hasInitBoost = false;

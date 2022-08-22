@@ -18,8 +18,5 @@ size_t getMultiSparkCount(int rpm);
 
 class IgnitionState : public ignition_state_s {
 public:
-	IgnitionState() {
-		luaTimingMult = 1;
-	}
 	floatms_t getSparkDwell(int rpm);
 };

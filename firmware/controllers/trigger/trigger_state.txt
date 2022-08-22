@@ -3,10 +3,10 @@ struct_no_prefix trigger_state_s
     float autoscale     vvtSyncGapRatio;;"", 1, 0, -10000, 10000, 3
     float autoscale vvtCurrentPosition;;"", 1, 0, -10000, 10000, 3
     float autoscale triggerSyncGapRatio;@@GAUGE_NAME_TRG_GAP@@;"", 1, 0, -10000, 10000, 3
-    float triggerActualSyncGapRatio;
+    float triggerActualSyncGapRatio;trigger: unused field?
 
     uint8_t triggerStateIndex
     uint8_t vvtCounter
-	uint8_t vvtSyncCounter
+	uint8_t camResyncCounter
 	uint8_t vvtStateIndex
 end_struct

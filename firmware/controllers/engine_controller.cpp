@@ -25,7 +25,7 @@
 
 #include "os_access.h"
 #include "trigger_central.h"
-#include "fsio_impl.h"
+#include "script_impl.h"
 #include "idle_thread.h"
 #include "advance_map.h"
 #include "main_trigger_callback.h"
@@ -145,7 +145,6 @@ class EngineStateBlinkingTask : public PeriodicTimerController {
 	}
 
 	void PeriodicTask() override {
-		counter++;
 #if EFI_SHAFT_POSITION_INPUT
 		bool is_running = engine->rpmCalculator.isRunning();
 #else
@@ -154,14 +153,12 @@ class EngineStateBlinkingTask : public PeriodicTimerController {
 
 		if (is_running) {
 			// blink in running mode
-			enginePins.runningLedPin.setValue(counter % 2);
+			enginePins.runningLedPin.toggle();
 		} else {
 			int is_cranking = engine->rpmCalculator.isCranking();
 			enginePins.runningLedPin.setValue(is_cranking);
 		}
 	}
-private:
-	int counter = 0;
 };
 
 static EngineStateBlinkingTask engineStateBlinkingTask;
@@ -237,8 +234,8 @@ static void doPeriodicSlowCallback() {
 }
 
 void initPeriodicEvents() {
-	slowController.Start();
-	fastController.Start();
+	slowController.start();
+	fastController.start();
 }
 
 char * getPinNameByAdcChannel(const char *msg, adc_channel_e hwChannel, char *buffer) {
@@ -507,8 +504,7 @@ void commonInitEngineController() {
 
 	initAccelEnrichment();
 
-	// TODO: rename
-	initFsioImpl();
+	initScriptImpl();
 
 	initGpPwm();
 
@@ -603,6 +599,13 @@ bool validateConfig() {
 	ensureArrayIsAscendingOrDefault("Map estimate TPS", config->mapEstimateTpsBins);
 	ensureArrayIsAscendingOrDefault("Map estimate RPM", config->mapEstimateRpmBins);
 
+	ensureArrayIsAscendingOrDefault("Script Curve 1", config->scriptCurve1Bins);
+	ensureArrayIsAscendingOrDefault("Script Curve 2", config->scriptCurve2Bins);
+	ensureArrayIsAscendingOrDefault("Script Curve 3", config->scriptCurve3Bins);
+	ensureArrayIsAscendingOrDefault("Script Curve 4", config->scriptCurve4Bins);
+	ensureArrayIsAscendingOrDefault("Script Curve 5", config->scriptCurve5Bins);
+	ensureArrayIsAscendingOrDefault("Script Curve 6", config->scriptCurve6Bins);
+
 // todo: huh? why does this not work on CI?	ensureArrayIsAscendingOrDefault("Dwell Correction Voltage", engineConfiguration->dwellVoltageCorrVoltBins);
 
 	ensureArrayIsAscending("MAF decoding", config->mafDecodingBins);
@@ -691,7 +694,7 @@ void initEngineContoller() {
 		return;
 	}
 
-	engineStateBlinkingTask.Start();
+	engineStateBlinkingTask.start();
 
 	initVrPwm();
 

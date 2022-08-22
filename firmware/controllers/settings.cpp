@@ -131,7 +131,7 @@ void printConfiguration(const engine_configuration_s *engineConfiguration) {
 	efiPrintf("clutchUp@%s: %s", hwPortname(engineConfiguration->clutchUpPin),
 			boolToString(engine->clutchUpState));
 	efiPrintf("clutchDown@%s: %s", hwPortname(engineConfiguration->clutchDownPin),
-			boolToString(engine->clutchDownState));
+			boolToString(engine->engineState.clutchDownState));
 
 	efiPrintf("digitalPotentiometerSpiDevice %d", engineConfiguration->digitalPotentiometerSpiDevice);
 
@@ -211,7 +211,7 @@ static void printTpsSenser(const char *msg, SensorType sensor, int16_t min, int1
 			raw, getPinNameByAdcChannel(msg, channel, pinNameBuffer));
 
 
-	efiPrintf("current 10bit=%d value=%.2f", convertVoltageTo10bitADC(raw), tps.Value);
+	efiPrintf("current 10bit=%d value=%.2f", convertVoltageTo10bitADC(raw), tps.value_or(0));
 }
 
 void printTPSInfo(void) {
@@ -703,6 +703,8 @@ static void enableOrDisable(const char *param, bool isEnabled) {
 		engineConfiguration->verboseTLE8888 = isEnabled;
 	} else if (strEqualCaseInsensitive(param, "verboseCan")) {
 		engineConfiguration->verboseCan = isEnabled;
+	} else if (strEqualCaseInsensitive(param, "verboseIsoTp")) {
+		engineConfiguration->verboseIsoTp = isEnabled;
 	} else if (strEqualCaseInsensitive(param, "artificialMisfire")) {
 		engineConfiguration->artificialTestMisfire = isEnabled;
 	} else if (strEqualCaseInsensitive(param, "logic_level_trigger")) {
@@ -715,8 +717,6 @@ static void enableOrDisable(const char *param, bool isEnabled) {
 		engineConfiguration->isCJ125Enabled = isEnabled;
 	} else if (strEqualCaseInsensitive(param, "cj125verbose")) {
 		engineConfiguration->isCJ125Verbose = isEnabled;
-	} else if (strEqualCaseInsensitive(param, "engine_sniffer")) {
-		engineConfiguration->isEngineChartEnabled = isEnabled;
 	} else if (strEqualCaseInsensitive(param, "step1limimter")) {
 		engineConfiguration->enabledStep1Limiter = isEnabled;
 #if EFI_PROD_CODE
@@ -725,8 +725,6 @@ static void enableOrDisable(const char *param, bool isEnabled) {
 		setIdleMode(isEnabled ? IM_MANUAL : IM_AUTO);
 #endif /* EFI_IDLE_CONTROL */
 #endif /* EFI_PROD_CODE */
-	} else if (strEqualCaseInsensitive(param, "serial")) {
-		engineConfiguration->useSerialPort = isEnabled;
 	} else if (strEqualCaseInsensitive(param, "stepperidle")) {
 		engineConfiguration->useStepperIdle = isEnabled;
 	} else if (strEqualCaseInsensitive(param, "trigger_only_front")) {
@@ -983,7 +981,6 @@ const command_f_s commandsF[] = {
 		{"script_curve_2_value", setScriptCurve2Value},
 #if EFI_PROD_CODE
 #if EFI_IDLE_CONTROL
-		{"idle_offset", setIdleOffset},
 		{"idle_p", setIdlePFactor},
 		{"idle_i", setIdleIFactor},
 		{"idle_d", setIdleDFactor},
@@ -1195,6 +1192,7 @@ void initSettings(void) {
 
 	addConsoleActionSS("set_egt_cs_pin", (VoidCharPtrCharPtr) setEgtCSPin);
 	addConsoleActionI("set_egt_spi", setEgtSpi);
+	addConsoleActionI(CMD_ECU_UNLOCK, unlockEcu);
 
 	addConsoleActionSS("set_trigger_simulator_mode", setTriggerSimulatorMode);
 	addConsoleActionS("set_fuel_pump_pin", setFuelPumpPin);

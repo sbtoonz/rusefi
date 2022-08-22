@@ -80,7 +80,7 @@ class SerialTsChannel;
 			efiSetPadMode("Secondary UART TX", engineConfiguration->binarySerialTxPin, PAL_MODE_ALTERNATE(TS_SERIAL_AF));
 #endif /* EFI_PROD_CODE */
 
-			secondaryChannel.start(engineConfiguration->uartConsoleSerialSpeed);
+			secondaryChannel.start(engineConfiguration->tunerStudioSerialSpeed);
 
 			return &secondaryChannel;
 		}
@@ -93,12 +93,12 @@ void startSerialChannels() {
 #if HAS_PRIMARY
 	// todo: invert setting one day?
 	if (!engineConfiguration->disablePrimaryUart) {
-		primaryChannelThread.Start();
+		primaryChannelThread.start();
 	}
 #endif
 
 #if HAS_SECONDARY
-	secondaryChannelThread.Start();
+	secondaryChannelThread.start();
 #endif
 }
 

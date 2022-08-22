@@ -40,6 +40,7 @@
 #include "gear_detector.h"
 #include "advance_map.h"
 #include "fan_control.h"
+#include "sensor_checker.h"
 
 #ifndef EFI_UNIT_TEST
 #error EFI_UNIT_TEST must be defined!
@@ -192,6 +193,7 @@ public:
 		GearDetector,
 #endif // EFI_VEHICLE_SPEED
 		KnockController,
+		SensorChecker,
 		EngineModule // dummy placeholder so the previous entries can all have commas
 		> engineModules;
 
@@ -219,10 +221,10 @@ public:
 #endif // EFI_BOOST_CONTROL
 
 	IgnitionState ignitionState;
+	void resetLua();
 
 	FanControl1 fan1;
 	FanControl2 fan2;
-
 
 	efitick_t mostRecentSparkEvent;
 	efitick_t mostRecentTimeBetweenSparkEvents;
@@ -280,7 +282,7 @@ public:
 #endif
 #if EFI_UNIT_TEST
 	TestExecutor executor;
-#endif
+#endif // EFI_UNIT_TEST
 
 #if EFI_ENGINE_CONTROL
 	FuelSchedule injectionEvents;
@@ -290,11 +292,13 @@ public:
 
 	bool etbAutoTune = false;
 	/**
-	 * this is based on isEngineChartEnabled and engineSnifferRpmThreshold settings
+	 * this is based on engineSnifferRpmThreshold settings and current RPM
 	 */
-	bool isEngineChartEnabled = false;
+	bool isEngineSnifferEnabled = false;
 
-	bool tdcMarkEnabled = true; // used by unit tests only
+#if EFI_UNIT_TEST
+	bool tdcMarkEnabled = true;
+#endif // EFI_UNIT_TEST
 
 	/**
 	 * this is based on sensorChartMode and sensorSnifferRpmThreshold settings
@@ -361,7 +365,6 @@ public:
 	void updateTriggerWaveform();
 
 	bool clutchUpState = false;
-	bool clutchDownState = false;
 	bool brakePedalState = false;
 
 	bool isRunningPwmTest = false;
@@ -467,6 +470,9 @@ void prepareOutputSignals();
 
 void validateConfiguration();
 void doScheduleStopEngine();
+void scheduleReboot();
+bool isLockedFromUser();
+void unlockEcu(int password);
 
 #define HW_CHECK_RPM 200
 

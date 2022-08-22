@@ -55,10 +55,10 @@ static angle_t getRunningAdvance(int rpm, float engineLoad) {
 	    engine->module<IdleController>()->isIdlingOrTaper()) {
 		float idleAdvance = interpolate2d(rpm, config->idleAdvanceBins, config->idleAdvance);
 
-		auto [valid, tps] = Sensor::get(SensorType::DriverThrottleIntent);
-		if (valid) {
+		auto tps = Sensor::get(SensorType::DriverThrottleIntent);
+		if (tps) {
 			// interpolate between idle table and normal (running) table using TPS threshold
-			advanceAngle = interpolateClamped(0.0f, idleAdvance, engineConfiguration->idlePidDeactivationTpsThreshold, advanceAngle, tps);
+			advanceAngle = interpolateClamped(0.0f, idleAdvance, engineConfiguration->idlePidDeactivationTpsThreshold, advanceAngle, tps.Value);
 		}
 	}
 
@@ -66,10 +66,10 @@ static angle_t getRunningAdvance(int rpm, float engineLoad) {
 	if (engine->launchController.isLaunchCondition && engineConfiguration->enableLaunchRetard) {
         if (engineConfiguration->launchSmoothRetard) {
        	    float launchAngle = engineConfiguration->launchTimingRetard;
-	        int launchAdvanceRpmRange = engineConfiguration->launchTimingRpmRange;
 	        int launchRpm = engineConfiguration->launchRpm;
+	        int launchRpmWithTimingRange = launchRpm + engineConfiguration->launchTimingRpmRange;
 			 // interpolate timing from rpm at launch triggered to full retard at launch launchRpm + launchTimingRpmRange
-			return interpolateClamped(launchRpm, advanceAngle, (launchRpm + launchAdvanceRpmRange), launchAngle, rpm);
+			return interpolateClamped(launchRpm, advanceAngle, launchRpmWithTimingRange, launchAngle, rpm);
 		} else {
 			return engineConfiguration->launchTimingRetard;
         }
@@ -80,32 +80,27 @@ static angle_t getRunningAdvance(int rpm, float engineLoad) {
 }
 
 angle_t getAdvanceCorrections(int rpm) {
-	float iatCorrection;
+	auto iat = Sensor::get(SensorType::Iat);
 
-	const auto [iatValid, iat] = Sensor::get(SensorType::Iat);
-
-	if (!iatValid) {
-		iatCorrection = 0;
+	if (!iat) {
+		engine->engineState.timingIatCorrection = 0;
 	} else {
-		iatCorrection = interpolate3d(
+		engine->engineState.timingIatCorrection = interpolate3d(
 			config->ignitionIatCorrTable,
-			config->ignitionIatCorrLoadBins, iat,
+			config->ignitionIatCorrLoadBins, iat.Value,
 			config->ignitionIatCorrRpmBins, rpm
 		);
 	}
 
-	float pidTimingCorrection = engine->module<IdleController>()->getIdleTimingAdjustment(rpm);
+	engine->engineState.timingPidCorrection = engine->module<IdleController>()->getIdleTimingAdjustment(rpm);
 
 #if EFI_TUNER_STUDIO
-		engine->outputChannels.timingIatCorrection = iatCorrection;
-		engine->outputChannels.timingCltCorrection = engine->engineState.cltTimingCorrection;
-		engine->outputChannels.timingPidCorrection = pidTimingCorrection;
 		engine->outputChannels.multiSparkCounter = engine->engineState.multispark.count;
 #endif /* EFI_TUNER_STUDIO */
 
-	return iatCorrection
+	return engine->engineState.timingIatCorrection
 		+ engine->engineState.cltTimingCorrection
-		+ pidTimingCorrection;
+		+ engine->engineState.timingPidCorrection;
 }
 
 /**

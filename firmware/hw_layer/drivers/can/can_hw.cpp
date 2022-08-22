@@ -24,6 +24,8 @@
 
 static bool isCanEnabled = false;
 
+#if EFI_PROD_CODE
+
 // Values below calculated with http://www.bittiming.can-wiki.info/
 // Pick ST micro bxCAN
 // Clock rate of 42mhz for f4, 54mhz for f7, 80mhz for h7
@@ -120,6 +122,15 @@ static const CANConfig canConfig1000 = {
 };
 #endif
 
+#else // not EFI_PROD_CODE
+// Nothing to actually set for the simulator's CAN config.
+// It's impossible to set CAN bitrate from userspace, so we can't set it.
+static const CANConfig canConfig100;
+static const CANConfig canConfig250;
+static const CANConfig canConfig500;
+static const CANConfig canConfig1000;
+#endif
+
 class CanRead final : protected ThreadController<UTILITY_THREAD_STACK_SIZE> {
 public:
 	CanRead(size_t index)
@@ -128,11 +139,11 @@ public:
 	{
 	}
 
-	void Start(CANDriver* device) {
+	void start(CANDriver* device) {
 		m_device = device;
 
 		if (device) {
-			ThreadController::Start();
+			ThreadController::start();
 		}
 	}
 
@@ -168,10 +179,10 @@ static void canInfo() {
 		return;
 	}
 
-	efiPrintf("CAN1 TX %s speed %d", hwPortname(engineConfiguration->canTxPin), engineConfiguration->canBaudRate);
+	efiPrintf("CAN1 TX %s %s", hwPortname(engineConfiguration->canTxPin), getCan_baudrate_e(engineConfiguration->canBaudRate));
 	efiPrintf("CAN1 RX %s", hwPortname(engineConfiguration->canRxPin));
 
-	efiPrintf("CAN2 TX %s speed %d", hwPortname(engineConfiguration->can2TxPin), engineConfiguration->can2BaudRate);
+	efiPrintf("CAN2 TX %s %s", hwPortname(engineConfiguration->can2TxPin), getCan_baudrate_e(engineConfiguration->can2BaudRate));
 	efiPrintf("CAN2 RX %s", hwPortname(engineConfiguration->can2RxPin));
 
 	efiPrintf("type=%d canReadEnabled=%s canWriteEnabled=%s period=%d", engineConfiguration->canNbcType,
@@ -238,11 +249,13 @@ void startCanPins() {
 		return;
 	}
 
+#if EFI_PROD_CODE
 	efiSetPadModeIfConfigurationChanged("CAN TX", canTxPin, PAL_MODE_ALTERNATE(EFI_CAN_TX_AF));
 	efiSetPadModeIfConfigurationChanged("CAN RX", canRxPin, PAL_MODE_ALTERNATE(EFI_CAN_RX_AF));
 
 	efiSetPadModeIfConfigurationChanged("CAN2 TX", can2TxPin, PAL_MODE_ALTERNATE(EFI_CAN_TX_AF));
 	efiSetPadModeIfConfigurationChanged("CAN2 RX", can2RxPin, PAL_MODE_ALTERNATE(EFI_CAN_RX_AF));
+#endif // EFI_PROD_CODE
 }
 
 static const CANConfig * findConfig(can_baudrate_e rate) {
@@ -262,7 +275,7 @@ static const CANConfig * findConfig(can_baudrate_e rate) {
 	}
 }
 
-void initCan(void) {
+void initCan() {
 	addConsoleAction("caninfo", canInfo);
 
 	isCanEnabled = false;
@@ -305,12 +318,12 @@ void initCan(void) {
 
 	// fire up threads, as necessary
 	if (engineConfiguration->canWriteEnabled) {
-		canWrite.Start();
+		canWrite.start();
 	}
 
 	if (engineConfiguration->canReadEnabled) {
-		canRead1.Start(device1);
-		canRead2.Start(device2);
+		canRead1.start(device1);
+		canRead2.start(device2);
 	}
 
 	isCanEnabled = true;
@@ -321,3 +334,10 @@ bool getIsCanEnabled(void) {
 }
 
 #endif /* EFI_CAN_SUPPORT */
+
+void assertHwCanBusIndex(const size_t busIndex) {
+    // 'size_t' is an unsigned type so we are never below zero here
+	if (busIndex > 1) {
+  		firmwareError(CUSTOM_OBD_70, "Invalid HW CAN bus index %d", busIndex);
+  	}
+}

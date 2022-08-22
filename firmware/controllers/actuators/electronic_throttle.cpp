@@ -196,7 +196,7 @@ bool EtbController::init(etb_function_e function, DcMotor *motor, pid_s *pidPara
 
 		if (!Sensor::isRedundant(m_positionSensor)) {
 			firmwareError(
-				OBD_Throttle_Position_Sensor_Circuit_Malfunction,
+				OBD_TPS_Configuration,
 				"Use of electronic throttle requires %s to be redundant.",
 				Sensor::getSensorName(m_positionSensor)
 			);
@@ -206,7 +206,7 @@ bool EtbController::init(etb_function_e function, DcMotor *motor, pid_s *pidPara
 
 		if (!Sensor::isRedundant(SensorType::AcceleratorPedal)) {
 			firmwareError(
-				OBD_Throttle_Position_Sensor_Circuit_Malfunction,
+				OBD_TPS_Configuration,
 				"Use of electronic throttle requires accelerator pedal to be redundant."
 			);
 
@@ -303,8 +303,7 @@ expected<percent_t> EtbController::getSetpointEtb() {
 	float sanitizedPedal = clampF(0, pedalPosition.value_or(0), 100);
 	
 	float rpm = Sensor::getOrZero(SensorType::Rpm);
-	float targetFromTable = m_pedalMap->getValue(rpm, sanitizedPedal);
-	engine->engineState.targetFromTable = targetFromTable;
+	etbCurrentTarget = m_pedalMap->getValue(rpm, sanitizedPedal);
 
 	percent_t etbIdlePosition = clampF(
 									0,
@@ -317,14 +316,17 @@ expected<percent_t> EtbController::getSetpointEtb() {
 	// [0, 100] -> [idle, 100]
 	// 0% target from table -> idle position as target
 	// 100% target from table -> 100% target position
-	idlePosition = interpolateClamped(0, etbIdleAddition, 100, 100, targetFromTable);
+	idlePosition = interpolateClamped(0, etbIdleAddition, 100, 100, etbCurrentTarget);
 
-	percent_t targetPosition = idlePosition + luaAdjustment;
+	percent_t targetPosition = idlePosition + getLuaAdjustment();
 
 	// Apply any adjustment that this throttle alone needs
 	// Clamped to +-10 to prevent anything too wild
 	trim = clampF(-10, getThrottleTrim(rpm, targetPosition), 10);
 	targetPosition += trim;
+
+	// Clamp before rev limiter to avoid ineffective rev limit due to crazy out of range position target
+	targetPosition = clampF(0, targetPosition, 100);
 
 	// Lastly, apply ETB rev limiter
 	auto etbRpmLimit = engineConfiguration->etbRevLimitStart;
@@ -362,23 +364,36 @@ expected<percent_t> EtbController::getSetpointEtb() {
 	return targetPosition;
 }
 
+void EtbController::setLuaAdjustment(float adjustment) {
+	luaAdjustment = adjustment;
+	m_luaAdjustmentTimer.reset();
+}
+
+float EtbController::getLuaAdjustment() const {
+	// If the lua position hasn't been set in 0.2 second, don't adjust!
+	// This avoids a stuck throttle due to hung/rogue/etc Lua script
+	if (m_luaAdjustmentTimer.getElapsedSeconds() > 0.2f) {
+		return 0;
+	} else {
+		return luaAdjustment;
+	}
+}
+
 percent_t EtbController2::getThrottleTrim(float /*rpm*/, percent_t /*targetPosition*/) const {
 	// TODO: implement me #3680
 	return 0;
 }
 
 expected<percent_t> EtbController::getOpenLoop(percent_t target) {
-	float ff = 0;
-
 	// Don't apply open loop for wastegate/idle valve, only real ETB
 	if (m_function != ETB_Wastegate
 		&& m_function != ETB_IdleValve) {
-		ff = interpolate2d(target, config->etbBiasBins, config->etbBiasValues);
+		etbFeedForward = interpolate2d(target, config->etbBiasBins, config->etbBiasValues);
+	} else {
+	    etbFeedForward = 0;
 	}
 
-	engine->engineState.etbFeedForward = ff;
-
-	return ff;
+	return etbFeedForward;
 }
 
 expected<percent_t> EtbController::getClosedLoopAutotune(percent_t target, percent_t actualThrottlePosition) {
@@ -504,16 +519,10 @@ expected<percent_t> EtbController::getClosedLoop(percent_t target, percent_t obs
 		return getClosedLoopAutotune(target, observation);
 	} else {
 		// Check that we're not over the error limit
-		float errorIntegral = m_errorAccumulator.accumulate(target - observation);
-
-#if EFI_TUNER_STUDIO
-		if (m_function == ETB_Throttle1) {
-			engine->outputChannels.etbIntegralError = errorIntegral;
-		}
-#endif // EFI_TUNER_STUDIO
+		etbIntegralError = m_errorAccumulator.accumulate(target - observation);
 
 		// Allow up to 10 percent-seconds of error
-		if (errorIntegral > 10.0f) {
+		if (etbIntegralError > 10.0f) {
 			// TODO: figure out how to handle uncalibrated ETB 
 			//engine->limpManager.etbProblem();
 		}
@@ -573,7 +582,6 @@ void EtbController::update() {
 		}
 	}
 
-	engine->outputChannels.etbCurrentTarget = engine->engineState.targetFromTable;
 
 	m_pid.iTermMin = engineConfiguration->etb_iTermMin;
 	m_pid.iTermMax = engineConfiguration->etb_iTermMax;
@@ -642,7 +650,7 @@ struct EtbImpl final : public TBase {
 
 		// Check that the calibrate actually moved the throttle
 		if (absF(primaryMax - primaryMin) < 0.5f) {
-			firmwareError(OBD_Throttle_Position_Sensor_Circuit_Malfunction, "Auto calibrate failed, check your wiring!\r\nClosed voltage: %.1fv Open voltage: %.1fv", primaryMin, primaryMax);
+			firmwareError(OBD_TPS_Configuration, "Auto calibrate failed, check your wiring!\r\nClosed voltage: %.1fv Open voltage: %.1fv", primaryMin, primaryMax);
 			TBase::m_isAutocal = false;
 			return;
 		}
@@ -678,7 +686,7 @@ static EtbImpl<EtbController1> etb1;
 static EtbImpl<EtbController2> etb2;
 
 static_assert(ETB_COUNT == 2);
-EtbController* etbControllers[] = { &etb1, &etb2 };
+static EtbController* etbControllers[] = { &etb1, &etb2 };
 
 struct EtbThread final : public PeriodicController<512> {
 	EtbThread() : PeriodicController("ETB", PRIO_ETB, ETB_LOOP_FREQUENCY) {}
@@ -871,8 +879,8 @@ void setDefaultEtbParameters() {
 	// voltage, not ADC like with TPS
 	engineConfiguration->throttlePedalUpVoltage = 0;
 	engineConfiguration->throttlePedalWOTVoltage = 5;
-
-	engineConfiguration->throttlePedalSecondaryWOTVoltage = 5.0;
+	engineConfiguration->throttlePedalSecondaryUpVoltage = 5.0;
+	engineConfiguration->throttlePedalSecondaryWOTVoltage = 0.0;
 
 	engineConfiguration->etb = {
 		1,		// Kp
@@ -1000,7 +1008,7 @@ void doInitElectronicThrottle() {
 #endif /* EFI_UNIT_TEST */
 
 #if !EFI_UNIT_TEST
-	etbThread.Start();
+	etbThread.start();
 #endif
 }
 
@@ -1035,6 +1043,14 @@ void setEtbWastegatePosition(percent_t pos) {
 	for (int i = 0; i < ETB_COUNT; i++) {
 		if (auto etb = engine->etbControllers[i]) {
 			etb->setWastegatePosition(pos);
+		}
+	}
+}
+
+void setEtbLuaAdjustment(percent_t pos) {
+	for (int i = 0; i < ETB_COUNT; i++) {
+		if (auto etb = engine->etbControllers[i]) {
+			etb->setLuaAdjustment(pos);
 		}
 	}
 }

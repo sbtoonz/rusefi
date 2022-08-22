@@ -2,6 +2,8 @@ package com.rusefi;
 
 import com.devexperts.logging.Logging;
 import com.rusefi.enum_reader.Value;
+import com.rusefi.newparse.ParseState;
+import com.rusefi.newparse.parsing.Definition;
 import com.rusefi.util.SystemOut;
 import org.jetbrains.annotations.NotNull;
 import org.yaml.snakeyaml.Yaml;
@@ -19,7 +21,8 @@ public class PinoutLogic {
 
     public static final String CONFIG_BOARDS = "config/boards/";
     private static final String CONNECTORS = "/connectors";
-    private static final String QUOTED_NONE = quote("NONE");
+    private static final String NONE = "NONE";
+    private static final String QUOTED_NONE = quote(NONE);
     public static final String QUOTED_INVALID = quote(VariableRegistry.INVALID);
 
     private final File[] boardYamlFiles;
@@ -43,7 +46,7 @@ public class PinoutLogic {
         return null;
     }
 
-    private static void registerPins(String boardName, ArrayList<PinState> listPins, VariableRegistry registry, ReaderState state) {
+    private static void registerPins(String boardName, ArrayList<PinState> listPins, VariableRegistry registry, ReaderState state, ParseState parseState) {
         if (listPins == null || listPins.isEmpty()) {
             return;
         }
@@ -83,39 +86,49 @@ public class PinoutLogic {
             EnumsReader.EnumState enumList = state.enumsReader.getEnums().get(pinType);
             EnumPair pair = enumToOptionsList(nothingName, enumList, kv.getValue());
             if (pair.getSimpleForm().length() > 0) {
+                // we seem to be here if specific pin category like switch_inputs has no pins
                 registry.register(outputEnumName + ENUM_SUFFIX, pair.getShorterForm());
+                parseState.addDefinition(outputEnumName + ENUM_SUFFIX, pair.getShorterForm(), Definition.OverwritePolicy.IgnoreNew);
             }
             registry.register(outputEnumName + FULL_JAVA_ENUM, pair.getSimpleForm());
+            parseState.addDefinition(outputEnumName + FULL_JAVA_ENUM, pair.getSimpleForm(), Definition.OverwritePolicy.IgnoreNew);
         }
     }
 
     @NotNull
     public static EnumPair enumToOptionsList(String nothingName, EnumsReader.EnumState enumList, ArrayList<String> values) {
         StringBuilder simpleForm = new StringBuilder();
-        StringBuilder smartForm = new StringBuilder();
+
+        Map<Integer, String> pinMap = new HashMap<>();
+
         for (int i = 0; i < values.size(); i++) {
-            appendCommandIfNeeded(simpleForm);
+            appendCommaIfNeeded(simpleForm);
             String key = findKey(enumList, i);
+
+            String value = values.get(i);
+            if (i == 0) {
+                pinMap.put(i, NONE);
+            } else if (value != null) {
+                pinMap.put(i, value);
+            }
             if (key.equals(nothingName)) {
                 simpleForm.append(QUOTED_NONE);
-                appendCommandIfNeeded(smartForm);
-                smartForm.append(i + "=" + QUOTED_NONE);
-
-            } else if (values.get(i) == null) {
+            } else if (value == null) {
                 simpleForm.append(QUOTED_INVALID);
             } else {
-                appendCommandIfNeeded(smartForm);
-                String quotedValue = quote(values.get(i));
-                smartForm.append(i + "=" + quotedValue);
+                String quotedValue = quote(value);
                 simpleForm.append(quotedValue);
             }
         }
-        String shorterForm = smartForm.length() < simpleForm.length() ? smartForm.toString() : simpleForm.toString();
+        String keyValueForm = VariableRegistry.getHumanSortedTsKeyValueString(pinMap);
+        return new EnumPair(keyValueForm, simpleForm.toString());
 
-        return new EnumPair(shorterForm, simpleForm.toString());
+        //        String shorterForm = smartForm.length() < simpleForm.length() ? smartForm.toString() : simpleForm.toString();
+//
+//        return new EnumPair(shorterForm, simpleForm.toString());
     }
 
-    private static void appendCommandIfNeeded(StringBuilder sb) {
+    private static void appendCommaIfNeeded(StringBuilder sb) {
         if (sb.length() > 0)
             sb.append(",");
     }
@@ -209,9 +222,9 @@ public class PinoutLogic {
         return new PinoutLogic(boardName, boardYamlFiles);
     }
 
-    public void registerBoardSpecificPinNames(VariableRegistry registry, ReaderState state) throws IOException {
+    public void registerBoardSpecificPinNames(VariableRegistry registry, ReaderState state, ParseState parseState) throws IOException {
         readFiles();
-        registerPins(boardName, globalList, registry, state);
+        registerPins(boardName, globalList, registry, state, parseState);
 
         try (FileWriter getTsNameByIdFile = new FileWriter(PinoutLogic.CONFIG_BOARDS + boardName + PinoutLogic.CONNECTORS + File.separator + "generated_ts_name_by_pin.cpp")) {
             getTsNameByIdFile.append(header);

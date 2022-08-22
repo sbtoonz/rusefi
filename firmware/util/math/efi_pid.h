@@ -59,8 +59,6 @@ public:
 	void setErrorAmplification(float coef);
 #if EFI_TUNER_STUDIO
 	void postState(pid_status_s& pidStatus) const;
-	void postState(TunerStudioOutputChannels *tsOutputChannels) const;
-	void postState(TunerStudioOutputChannels *tsOutputChannels, int pMult) const;
 #endif /* EFI_TUNER_STUDIO */
 	void showPidStatus(const char* msg) const;
 	void sleep();
@@ -69,7 +67,7 @@ public:
 	float iTermMin = -1000000.0;
 	float iTermMax =  1000000.0;
 protected:
-	pid_s *parameters;
+	pid_s *parameters = nullptr;
 	virtual void updateITerm(float value);
 };
 

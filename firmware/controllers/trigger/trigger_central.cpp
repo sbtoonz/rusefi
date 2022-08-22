@@ -79,7 +79,18 @@ expected<float> TriggerCentral::getCurrentEnginePhase(efitick_t nowNt) const {
 		return unexpected;
 	}
 
-	return m_syncPointTimer.getElapsedUs(nowNt) / oneDegreeUs;
+	float elapsed;
+	float toothPhase;
+
+	{
+		// under lock to avoid mismatched tooth phase and time
+		chibios_rt::CriticalSectionLocker csl;
+
+		elapsed = m_lastToothTimer.getElapsedUs(nowNt);
+		toothPhase = m_lastToothPhaseFromSyncPoint;
+	}
+
+	return toothPhase + elapsed / oneDegreeUs;
 }
 
 /**
@@ -310,9 +321,9 @@ void hwHandleVvtCamSignal(trigger_value_e front, efitick_t nowNt, int index) {
 		return;
 	}
 
-	angle_t currentPosition = currentPhase.Value;
-	// convert engine cycle angle into trigger cycle angle
-	currentPosition -= tdcPosition();
+	angle_t angleFromPrimarySyncPoint = currentPhase.Value;
+	// convert trigger cycle angle into engine cycle angle
+	angle_t currentPosition = angleFromPrimarySyncPoint - tdcPosition();
 	// https://github.com/rusefi/rusefi/issues/1713 currentPosition could be negative that's expected
 
 #if EFI_UNIT_TEST
@@ -366,9 +377,9 @@ void hwHandleVvtCamSignal(trigger_value_e front, efitick_t nowNt, int index) {
 	default:
 		// else, do nothing
 		break;
-    }
+	}
 
-	if (absF(vvtPosition - tdcPosition()) < 7) {
+	if (absF(angleFromPrimarySyncPoint) < 7) {
 		/**
 		 * we prefer not to have VVT sync right at trigger sync so that we do not have phase detection error if things happen a bit in
 		 * wrong order due to belt flex or else
@@ -510,8 +521,8 @@ static const bool isUpEvent[6] = { false, true, false, true, false, true };
 static const char *eventId[6] = { PROTOCOL_CRANK1, PROTOCOL_CRANK1, PROTOCOL_CRANK2, PROTOCOL_CRANK2, PROTOCOL_CRANK3, PROTOCOL_CRANK3 };
 
 static void reportEventToWaveChart(trigger_event_e ckpSignalType, int index) {
-	if (!engine->isEngineChartEnabled) { // this is here just as a shortcut so that we avoid engine sniffer as soon as possible
-		return; // engineSnifferRpmThreshold is accounted for inside engine->isEngineChartEnabled
+	if (!engine->isEngineSnifferEnabled) { // this is here just as a shortcut so that we avoid engine sniffer as soon as possible
+		return; // engineSnifferRpmThreshold is accounted for inside engine->isEngineSnifferEnabled
 	}
 
 
@@ -685,18 +696,27 @@ void TriggerCentral::handleShaftSignal(trigger_event_e signal, efitick_t timesta
 		int crankDivider = getCrankDivider(triggerShape.getOperationMode());
 		int crankInternalIndex = triggerState.getTotalRevolutionCounter() % crankDivider;
 		int triggerIndexForListeners = decodeResult.Value.CurrentIndex + (crankInternalIndex * triggerShape.getSize());
-		if (triggerIndexForListeners == 0) {
-			m_syncPointTimer.reset(timestamp);
-		}
 
 		reportEventToWaveChart(signal, triggerIndexForListeners);
 
-		// Compute the current engine absolute phase, 0 means currently at #1 TDC
-		auto currentPhase = engine->triggerCentral.triggerFormDetails.eventAngles[triggerIndexForListeners] - tdcPosition();
+		// Look up this tooth's angle from the sync point. If this tooth is the sync point, we'll get 0 here.
+		auto currentPhaseFromSyncPoint = engine->triggerCentral.triggerFormDetails.eventAngles[triggerIndexForListeners];
+
+		// Adjust so currentPhase is in engine-space angle, not trigger-space angle
+		auto currentPhase = currentPhaseFromSyncPoint - tdcPosition();
 		wrapAngle(currentPhase, "currentEnginePhase", CUSTOM_ERR_6555);
 #if EFI_TUNER_STUDIO
 		engine->outputChannels.currentEnginePhase = currentPhase;
 #endif // EFI_TUNER_STUDIO
+
+		// Record precise time and phase of the engine. This is used for VVT decode.
+		{
+			// under lock to avoid mismatched tooth phase and time
+			chibios_rt::CriticalSectionLocker csl;
+
+			m_lastToothTimer.reset(timestamp);
+			m_lastToothPhaseFromSyncPoint = currentPhaseFromSyncPoint;
+		}
 
 #if TRIGGER_EXTREME_LOGGING
 	efiPrintf("trigger %d %d %d", triggerIndexForListeners, getRevolutionCounter(), (int)getTimeNowUs());
@@ -718,12 +738,24 @@ void TriggerCentral::handleShaftSignal(trigger_event_e signal, efitick_t timesta
 		waTriggerEventListener(signal, triggerIndexForListeners, timestamp);
 #endif
 
+		// TODO: is this logic to compute next trigger tooth angle correct?
+		auto nextToothIndex = triggerIndexForListeners;
+		float nextPhase = 0;
+
+		do {
+			// I don't love this.
+			nextToothIndex = (nextToothIndex + 1) % engine->engineCycleEventCount;
+			nextPhase = engine->triggerCentral.triggerFormDetails.eventAngles[nextToothIndex] - tdcPosition();
+			wrapAngle(nextPhase, "nextEnginePhase", CUSTOM_ERR_6555);
+		} while (nextPhase == currentPhase);
+
 		// Handle ignition and injection
-		mainTriggerCallback(triggerIndexForListeners, timestamp);
+		mainTriggerCallback(triggerIndexForListeners, timestamp, currentPhase, nextPhase);
 
 		// Decode the MAP based "cam" sensor
 		decodeMapCam(timestamp, currentPhase);
 	} else {
+		// We don't have sync, but report to the wave chart anyway as index 0.
 		reportEventToWaveChart(signal, 0);
 	}
 }
@@ -745,11 +777,6 @@ static void triggerShapeInfo() {
 extern PwmConfig triggerSignal;
 #endif /* #if EFI_PROD_CODE */
 
-#if HAL_USE_ICU == TRUE
-extern int icuRisingCallbackCounter;
-extern int icuFallingCallbackCounter;
-#endif /* HAL_USE_ICU */
-
 void triggerInfo(void) {
 #if EFI_PROD_CODE || EFI_SIMULATOR
 
@@ -759,10 +786,6 @@ void triggerInfo(void) {
 #if (HAL_TRIGGER_USE_PAL == TRUE) && (PAL_USE_CALLBACKS == TRUE)
 		efiPrintf("trigger PAL mode %d", engine->hwTriggerInputEnabled);
 #else
-
-#if HAL_USE_ICU == TRUE
-	efiPrintf("trigger ICU hw: %d %d %d", icuRisingCallbackCounter, icuFallingCallbackCounter, engine->hwTriggerInputEnabled);
-#endif /* HAL_USE_ICU */
 
 #endif /* HAL_TRIGGER_USE_PAL */
 
@@ -848,6 +871,11 @@ void triggerInfo(void) {
 	efiPrintf("totalTriggerHandlerMaxTime=%d", triggerMaxDuration);
 
 #endif /* EFI_PROD_CODE */
+
+#if EFI_ENGINE_SNIFFER
+	efiPrintf("engine sniffer current size=%d", waveChart.getSize());
+#endif /* EFI_ENGINE_SNIFFER */
+
 }
 
 static void resetRunningTriggerCounters() {

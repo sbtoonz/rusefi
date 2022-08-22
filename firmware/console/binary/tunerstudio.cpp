@@ -71,7 +71,6 @@
 #include "tunerstudio_io.h"
 #include "malfunction_central.h"
 #include "console_io.h"
-#include "crc.h"
 #include "bluetooth.h"
 #include "tunerstudio_io.h"
 #include "tooth_logger.h"
@@ -101,6 +100,8 @@ static void printErrorCounters() {
 
 /* 1S */
 #define TS_COMMUNICATION_TIMEOUT	TIME_MS2I(1000)
+/* 10mS when receiving byte by byte */
+#define TS_COMMUNICATION_TIMEOUT_SHORT	TIME_MS2I(10)
 
 static efitimems_t previousWriteReportMs = 0;
 
@@ -162,105 +163,6 @@ void TunerStudio::handlePageSelectCommand(TsChannelBase *tsChannel, ts_response_
 	sendOkResponse(tsChannel, mode);
 }
 
-#if EFI_TUNER_STUDIO
-
-const void * getStructAddr(live_data_e structId) {
-#if EFI_UNIT_TEST
-	if (engine == nullptr) {
-		return nullptr;
-	}
-#endif
-	switch (structId) {
-	case LDS_output_channels:
-		return reinterpret_cast<const uint8_t*>(&engine->outputChannels);
-
-	case LDS_high_pressure_fuel_pump:
-#if EFI_HPFP
-		return static_cast<high_pressure_fuel_pump_s*>(&engine->module<HpfpController>().unmock());
-#else
-		return nullptr; // explicit null to confirm that this struct is handled
-#endif // EFI_HPFP
-
-	case LDS_launch_control_state:
-#if EFI_LAUNCH_CONTROL
-		return static_cast<launch_control_state_s*>(&engine->launchController);
-#else
-		return nullptr; // explicit null to confirm that this struct is handled
-#endif // EFI_LAUNCH_CONTROL
-
-	case LDS_injector_model:
-		return static_cast<injector_model_s*>(&engine->module<InjectorModel>().unmock());
-
-	case LDS_boost_control:
-#if EFI_BOOST_CONTROL
-		return static_cast<boost_control_s*>(&engine->boostController);
-#else
-		return nullptr; // explicit null to confirm that this struct is handled
-#endif // EFI_BOOST_CONTROL
-
-	case LDS_ac_control:
-		return static_cast<ac_control_s*>(&engine->module<AcController>().unmock());
-	case LDS_fan_control:
-		return static_cast<fan_control_s*>(&engine->fan1);
-	case LDS_fuel_pump_control:
-		return static_cast<fuel_pump_control_s*>(&engine->module<FuelPumpController>().unmock());
-	case LDS_main_relay:
-		return static_cast<main_relay_s*>(&engine->module<MainRelayController>().unmock());
-	case LDS_engine_state:
-		return static_cast<engine_state_s*>(&engine->engineState);
-	case LDS_tps_accel_state:
-		return static_cast<tps_accel_state_s*>(&engine->tpsAccelEnrichment);
-	case LDS_trigger_central:
-		return static_cast<trigger_central_s*>(&engine->triggerCentral);
-	case LDS_trigger_state:
-#if EFI_SHAFT_POSITION_INPUT
-		return static_cast<trigger_state_s*>(&engine->triggerCentral.triggerState);
-#else
-		return nullptr;
-#endif // EFI_SHAFT_POSITION_INPUT
-	case LDS_wall_fuel_state:
-		return static_cast<wall_fuel_state_s*>(&engine->injectionEvents.elements[0].wallFuel);
-	case LDS_idle_state:
-		return static_cast<idle_state_s*>(&engine->module<IdleController>().unmock());
-	case LDS_ignition_state:
-		return static_cast<ignition_state_s*>(&engine->ignitionState);
-	case LDS_electronic_throttle:
-		// todo: figure out how to handle two units?
-		return nullptr;
-
-//#if EFI_ELECTRONIC_THROTTLE_BODY
-//	case LDS_ETB_PID:
-//		return engine->etbControllers[0]->getPidState();
-//#endif /* EFI_ELECTRONIC_THROTTLE_BODY */
-//
-//#ifndef EFI_IDLE_CONTROL
-//	case LDS_IDLE_PID:
-//		return static_cast<pid_state_s*>(getIdlePid());
-//#endif /* EFI_IDLE_CONTROL */
-	default:
-// huh?		firmwareError(OBD_PCM_Processor_Fault, "getStructAddr not implemented for %d", (int)structId);
-		return nullptr;
-	}
-}
-
-/**
- * Read internal structure for Live Doc
- * This is somewhat similar to read page and somewhat similar to read outputs
- * We can later consider combining this functionality
- */
-static void handleGetStructContent(TsChannelBase* tsChannel, int structId, int size) {
-	tsState.readPageCommandsCounter++;
-
-	const void *addr = getStructAddr((live_data_e)structId);
-	if (addr == nullptr) {
-		// todo: add warning code - unexpected structId
-		return;
-	}
-	tsChannel->sendResponse(TS_CRC, (const uint8_t *)addr, size);
-}
-
-#endif // EFI_TUNER_STUDIO
-
 bool validateOffsetCount(size_t offset, size_t count, TsChannelBase* tsChannel);
 
 extern bool rebootForPresetPending;
@@ -272,6 +174,10 @@ extern bool rebootForPresetPending;
 void TunerStudio::handleWriteChunkCommand(TsChannelBase* tsChannel, ts_response_format_e mode, uint16_t offset, uint16_t count,
 		void *content) {
 	tsState.writeChunkCommandCounter++;
+	if (isLockedFromUser()) {
+		sendErrorCode(tsChannel, TS_RESPONSE_UNRECOGNIZED_COMMAND);
+		return;
+	}
 
 	efiPrintf("WRITE CHUNK mode=%d o=%d s=%d", mode, offset, count);
 
@@ -313,6 +219,10 @@ void TunerStudio::handleWriteValueCommand(TsChannelBase* tsChannel, ts_response_
 	UNUSED(mode);
 
 	tsState.writeValueCommandCounter++;
+	if (isLockedFromUser()) {
+		sendErrorCode(tsChannel, TS_RESPONSE_UNRECOGNIZED_COMMAND);
+		return;
+	}
 
 	tunerStudioDebug(tsChannel, "got W (Write)"); // we can get a lot of these
 
@@ -348,7 +258,14 @@ void TunerStudio::handlePageReadCommand(TsChannelBase* tsChannel, ts_response_fo
 		return;
 	}
 
-	const uint8_t* addr = getWorkingPageAddr() + offset;
+	uint8_t* addr;
+	if (isLockedFromUser()) {
+		// to have rusEFI console happy just send all zeros within a valid packet
+		addr = (uint8_t*)&tsChannel->scratchBuffer + SCRATCH_BUFFER_PREFIX_SIZE;
+		memset(addr, 0, count);
+	} else {
+		addr = getWorkingPageAddr() + offset;
+	}
 	tsChannel->sendResponse(mode, addr, count);
 #if EFI_TUNER_STUDIO_VERBOSE
 //	efiPrintf("Sending %d done", count);
@@ -398,7 +315,6 @@ static bool isKnownCommand(char command) {
 			|| command == TS_PAGE_COMMAND || command == TS_BURN_COMMAND || command == TS_SINGLE_WRITE_COMMAND
 			|| command == TS_CHUNK_WRITE_COMMAND || command == TS_EXECUTE
 			|| command == TS_IO_TEST_COMMAND
-			|| command == TS_GET_STRUCT
 			|| command == TS_SET_LOGGER_SWITCH
 			|| command == TS_GET_LOGGER_GET_BUFFER
 			|| command == TS_GET_COMPOSITE_BUFFER_DONE_DIFFERENTLY
@@ -505,7 +421,7 @@ static int tsProcessOne(TsChannelBase* tsChannel) {
 	tsState.totalCounter++;
 
 	uint8_t firstByte;
-	int received = tsChannel->readTimeout(&firstByte, 1, TS_COMMUNICATION_TIMEOUT);
+	size_t received = tsChannel->readTimeout(&firstByte, 1, TS_COMMUNICATION_TIMEOUT);
 #if EFI_SIMULATOR
 		logMsg("received %d\r\n", received);
 #endif
@@ -517,6 +433,7 @@ static int tsProcessOne(TsChannelBase* tsChannel) {
 		// assume there's connection loss and notify the bluetooth init code
 		bluetoothSoftwareDisconnectNotify();
 #endif  /* EFI_BLUETOOTH_SETUP */
+		tsChannel->in_sync = false;
 		return -1;
 	}
 
@@ -525,48 +442,72 @@ static int tsProcessOne(TsChannelBase* tsChannel) {
 	}
 
 	uint8_t secondByte;
-	received = tsChannel->readTimeout(&secondByte, 1, TS_COMMUNICATION_TIMEOUT);
+	/* second byte should be received within minimal delay */
+	received = tsChannel->readTimeout(&secondByte, 1, TS_COMMUNICATION_TIMEOUT_SHORT);
 	if (received != 1) {
 		tunerStudioError(tsChannel, "TS: ERROR: no second byte");
+		tsChannel->in_sync = false;
 		return -1;
 	}
 
 	uint16_t incomingPacketSize = firstByte << 8 | secondByte;
+	size_t expectedSize = incomingPacketSize + CRC_VALUE_SIZE;
 
-	if (incomingPacketSize == 0 || incomingPacketSize > (sizeof(tsChannel->scratchBuffer) - CRC_WRAPPING_SIZE)) {
-		efiPrintf("process_ts: channel=%s invalid size: %d", tsChannel->name, incomingPacketSize);
-		tunerStudioError(tsChannel, "process_ts: ERROR: CRC header size");
-		sendErrorCode(tsChannel, TS_RESPONSE_UNDERRUN);
+	if (incomingPacketSize == 0 || expectedSize > sizeof(tsChannel->scratchBuffer)) {
+		if (tsChannel->in_sync) {
+			efiPrintf("process_ts: channel=%s invalid size: %d", tsChannel->name, incomingPacketSize);
+			tunerStudioError(tsChannel, "process_ts: ERROR: CRC header size");
+			/* send error only if previously we were in sync */
+			sendErrorCode(tsChannel, TS_RESPONSE_UNDERRUN);
+		}
+		tsChannel->in_sync = false;
 		return -1;
 	}
 
-	received = tsChannel->readTimeout((uint8_t* )tsChannel->scratchBuffer, 1, TS_COMMUNICATION_TIMEOUT);
-	if (received != 1) {
-		tunerStudioError(tsChannel, "ERROR: did not receive command");
-		sendErrorCode(tsChannel, TS_RESPONSE_UNDERRUN);
-		return -1;
-	}
+	char command;
+	if (tsChannel->in_sync) {
+		/* we are in sync state, packet size should be correct so lets receive full packet and then check if command is supported
+		 * otherwise (if abort reception in middle of packet) it will break syncronization and cause error on next packet */
+		received = tsChannel->readTimeout((uint8_t*)(tsChannel->scratchBuffer), expectedSize, TS_COMMUNICATION_TIMEOUT);
+		command = tsChannel->scratchBuffer[0];
 
-	char command = tsChannel->scratchBuffer[0];
-	if (!isKnownCommand(command)) {
-		efiPrintf("unexpected command %x", command);
-		sendErrorCode(tsChannel, TS_RESPONSE_UNRECOGNIZED_COMMAND);
-		return -1;
+		if (received != expectedSize) {
+			/* print and send error as we were in sync */
+			efiPrintf("Got only %d bytes while expecting %d for command %c", received,
+					expectedSize, command);
+			tunerStudioError(tsChannel, "ERROR: not enough bytes in stream");
+			sendErrorCode(tsChannel, TS_RESPONSE_UNDERRUN);
+			tsChannel->in_sync = false;
+			return -1;
+		}
+
+		if (!isKnownCommand(command)) {
+			/* print and send error as we were in sync */
+			efiPrintf("unexpected command %x", command);
+			sendErrorCode(tsChannel, TS_RESPONSE_UNRECOGNIZED_COMMAND);
+			tsChannel->in_sync = false;
+			return -1;
+		}
+	} else {
+		/* receive only command byte to check if it is supported */
+		received = tsChannel->readTimeout((uint8_t*)(tsChannel->scratchBuffer), 1, TS_COMMUNICATION_TIMEOUT_SHORT);
+		command = tsChannel->scratchBuffer[0];
+
+		if (!isKnownCommand(command)) {
+			/* do not report any error as we are not in sync */
+			return -1;
+		}
+
+		received = tsChannel->readTimeout((uint8_t*)(tsChannel->scratchBuffer) + 1, expectedSize - 1, TS_COMMUNICATION_TIMEOUT);
+		if (received != expectedSize - 1) {
+			/* do not report any error as we are not in sync */
+			return -1;
+		}
 	}
 
 #if EFI_SIMULATOR
-		logMsg("command %c\r\n", command);
+	logMsg("command %c\r\n", command);
 #endif
-
-	int expectedSize = incomingPacketSize + CRC_VALUE_SIZE - 1;
-	received = tsChannel->readTimeout((uint8_t*)(tsChannel->scratchBuffer + 1), expectedSize, TS_COMMUNICATION_TIMEOUT);
-	if (received != expectedSize) {
-		efiPrintf("Got only %d bytes while expecting %d for command %c", received,
-				expectedSize, command);
-		tunerStudioError(tsChannel, "ERROR: not enough bytes in stream");
-		sendErrorCode(tsChannel, TS_RESPONSE_UNDERRUN);
-		return -1;
-	}
 
 	uint32_t expectedCrc = *(uint32_t*) (tsChannel->scratchBuffer + incomingPacketSize);
 
@@ -574,16 +515,19 @@ static int tsProcessOne(TsChannelBase* tsChannel) {
 
 	uint32_t actualCrc = crc32(tsChannel->scratchBuffer, incomingPacketSize);
 	if (actualCrc != expectedCrc) {
-		efiPrintf("TunerStudio: CRC %x %x %x %x", tsChannel->scratchBuffer[incomingPacketSize + 0],
-				tsChannel->scratchBuffer[incomingPacketSize + 1], tsChannel->scratchBuffer[incomingPacketSize + 2],
-				tsChannel->scratchBuffer[incomingPacketSize + 3]);
-
-		efiPrintf("TunerStudio: command %c actual CRC %x/expected %x", tsChannel->scratchBuffer[0],
-				actualCrc, expectedCrc);
-		tunerStudioError(tsChannel, "ERROR: CRC issue");
-		sendErrorCode(tsChannel, TS_RESPONSE_CRC_FAILURE);
+		/* send error only if previously we were in sync */
+		if (tsChannel->in_sync) {
+			efiPrintf("TunerStudio: command %c actual CRC %x/expected %x", tsChannel->scratchBuffer[0],
+					actualCrc, expectedCrc);
+			tunerStudioError(tsChannel, "ERROR: CRC issue");
+			sendErrorCode(tsChannel, TS_RESPONSE_CRC_FAILURE);
+			tsChannel->in_sync = false;
+		}
 		return -1;
 	}
+
+	/* we were able to receive known command with correct crc and size! */
+	tsChannel->in_sync = true;
 
 	int success = tsInstance.handleCrcCommand(tsChannel, tsChannel->scratchBuffer, incomingPacketSize);
 
@@ -665,8 +609,6 @@ void TunerStudio::handleExecuteCommand(TsChannelBase* tsChannel, char *data, int
 	tsChannel->writeCrcPacket(TS_RESPONSE_COMMAND_OK, nullptr, 0);
 }
 
-static int transmitted = 0;
-
 int TunerStudio::handleCrcCommand(TsChannelBase* tsChannel, char *data, int incomingPacketSize) {
 	ScopePerf perf(PE::TunerStudioHandleCrcCommand);
 
@@ -700,9 +642,6 @@ int TunerStudio::handleCrcCommand(TsChannelBase* tsChannel, char *data, int inco
 		break;
 	case TS_PAGE_COMMAND:
 		handlePageSelectCommand(tsChannel, TS_CRC);
-		break;
-	case TS_GET_STRUCT:
-		handleGetStructContent(tsChannel, offset, count);
 		break;
 	case TS_CHUNK_WRITE_COMMAND:
 		handleWriteChunkCommand(tsChannel, TS_CRC, offset, count, data + sizeof(TunerStudioWriteChunkRequest));
@@ -761,41 +700,19 @@ int TunerStudio::handleCrcCommand(TsChannelBase* tsChannel, char *data, int inco
 		sendOkResponse(tsChannel, TS_CRC);
 
 		break;
-		case TS_GET_COMPOSITE_BUFFER_DONE_DIFFERENTLY:
-
-		{
-			EnableToothLoggerIfNotEnabled();
-			const uint8_t* const buffer = GetToothLoggerBuffer().Buffer;
-
-			const uint8_t* const start = buffer + COMPOSITE_PACKET_SIZE * transmitted;
-
-			int currentEnd = getCompositeRecordCount();
-
-			// set debug_mode 40
-			if (engineConfiguration->debugMode == DBG_COMPOSITE_LOG) {
-				engine->outputChannels.debugIntField1 = currentEnd;
-				engine->outputChannels.debugIntField2 = transmitted;
-
-			}
-
-			if (currentEnd > transmitted) {
-				// more normal case - tail after head
-				tsChannel->sendResponse(TS_CRC, start, COMPOSITE_PACKET_SIZE * (currentEnd - transmitted), true);
-				transmitted = currentEnd;
-			} else if (currentEnd == transmitted) {
-				tsChannel->sendResponse(TS_CRC, start, 0);
-			} else {
-				// we are here if tail of buffer has reached the end of buffer and re-started from the start of buffer
-				// sending end of the buffer, next transmission would take care of the rest
-				tsChannel->sendResponse(TS_CRC, start, COMPOSITE_PACKET_SIZE * (COMPOSITE_PACKET_COUNT - transmitted), true);
-				transmitted = 0;
-			}
-		}
-		break;
+	case TS_GET_COMPOSITE_BUFFER_DONE_DIFFERENTLY:
+		EnableToothLoggerIfNotEnabled();
+		// falls through
 	case TS_GET_LOGGER_GET_BUFFER:
 		{
 			auto toothBuffer = GetToothLoggerBuffer();
-			tsChannel->sendResponse(TS_CRC, toothBuffer.Buffer, toothBuffer.Length, true);
+
+			if (toothBuffer) {
+				tsChannel->sendResponse(TS_CRC, toothBuffer.Value.Buffer, toothBuffer.Value.Length, true);
+			} else {
+				// TS asked for a tooth logger buffer, but we don't have one to give it.
+				sendErrorCode(tsChannel, TS_RESPONSE_OUT_OF_RANGE);
+			}
 		}
 
 		break;
